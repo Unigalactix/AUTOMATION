@@ -121,4 +121,42 @@ describe('githubService', () => {
         });
     });
 
+    // --- generateDockerfile Tests ---
+    describe('generateDockerfile', () => {
+        const { generateDockerfile } = require('../githubService');
+
+        test('should generate Node.js Dockerfile', () => {
+            const dockerfile = generateDockerfile('node');
+            expect(dockerfile).toContain('FROM node:20-alpine');
+            expect(dockerfile).toContain('CMD ["npm", "start"]');
+        });
+
+        test('should generate Python Dockerfile', () => {
+            const dockerfile = generateDockerfile('python');
+            expect(dockerfile).toContain('FROM python:3.9-slim');
+            expect(dockerfile).toContain('requirements.txt');
+        });
+
+        test('should generate .NET Dockerfile', () => {
+            const dockerfile = generateDockerfile('dotnet');
+            expect(dockerfile).toContain('FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build');
+            expect(dockerfile).toContain('ENTRYPOINT ["dotnet", "App.dll"]');
+        });
+    });
+
+    describe('generateWorkflowFile with Docker', () => {
+        test('should generate Docker build/push workflow', () => {
+            const yaml = generateWorkflowFile({
+                language: 'node',
+                repoName: 'test/repo',
+                buildCommand: 'npm build',
+                testCommand: 'npm test',
+                deployTarget: 'docker'
+            });
+            expect(yaml).toContain('docker-build:');
+            expect(yaml).toContain('docker/login-action@v3');
+            expect(yaml).toContain('docker/build-push-action@v5');
+            expect(yaml).toContain('ghcr.io');
+        });
+    });
 });

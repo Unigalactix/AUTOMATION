@@ -122,7 +122,8 @@ async function processTicketData(issue) {
             filePath: `.github/workflows/${(repoName.split('/')[1] || 'repo')}-ci.yml`,
             content: workflowYml,
             language,
-            issueKey // Pass issueKey for stable branching
+            issueKey, // Pass issueKey for stable branching
+            deployTarget // Pass deploy target for Dockerfile generation logic
         });
 
         systemStatus.currentPrUrl = result.prUrl;
