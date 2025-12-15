@@ -58,7 +58,7 @@ async function processTicketData(issue) {
     systemStatus.currentPhase = 'Processing';
     systemStatus.currentTicketKey = issueKey;
     systemStatus.currentTicketLogs = [];
-    systemStatus.currentJiraUrl = `${process.env.JIRA_BASE_URL} /browse/${issueKey} `;
+    systemStatus.currentJiraUrl = `${process.env.JIRA_BASE_URL}/browse/${issueKey}`;
     systemStatus.currentPrUrl = null;
     systemStatus.currentPayload = null;
 
@@ -78,7 +78,7 @@ async function processTicketData(issue) {
     const projectKey = issueKey.split('-')[0];
 
     // Dynamic Default Repo Lookup
-    const defaultRepoEnvVar = `DEFAULT_REPO_${projectKey} `;
+    const defaultRepoEnvVar = `DEFAULT_REPO_${projectKey}`;
     const projectDefaultRepo = process.env[defaultRepoEnvVar];
 
     const repoName = ticketData.customfield_repo || ticketData.repoName || projectDefaultRepo || 'Unigalactix/sample-node-project';
@@ -100,7 +100,7 @@ async function processTicketData(issue) {
         else if (desc.match(/\b(dotnet|\.net|c#|csharp)\b/)) language = 'dotnet';
         else if (desc.match(/\b(java|spring|maven|gradle)\b/)) language = 'java';
 
-        if (language) logProgress(`Detected language from description: ${language} `);
+        if (language) logProgress(`Detected language from description: ${language}`);
     }
 
     // 2. Repo Inspection (Cache or Live)
@@ -112,7 +112,7 @@ async function processTicketData(issue) {
             logProgress(`Detecting language for ${repoName}...`);
             language = await detectRepoLanguage(repoName);
             repoLanguageCache.set(repoName, language);
-            logProgress(`Detected language: ${language} `);
+            logProgress(`Detected language: ${language}`);
         }
     }
 
@@ -142,7 +142,7 @@ async function processTicketData(issue) {
 
         // 1b. Get Default Branch (Dynamic)
         const defaultBranch = await getDefaultBranch(repoName);
-        logProgress(`Targeting default branch: ${defaultBranch} `);
+        logProgress(`Targeting default branch: ${defaultBranch}`);
 
         // 2. Generate Workflow
         logProgress(`Generating ${language} workflow for ${repoName}...`);
@@ -153,7 +153,7 @@ async function processTicketData(issue) {
         logProgress(`Initiating Pull Request creation sequence...`);
         const result = await createPullRequestForWorkflow({
             repoName,
-            filePath: `.github / workflows / ${repoName.split('/')[1] || 'repo'} -ci.yml`,
+            filePath: `.github/workflows/${repoName.split('/')[1] || 'repo'}-ci.yml`,
             content: workflowYml,
             language,
             issueKey, // Pass issueKey for stable branching
@@ -164,20 +164,20 @@ async function processTicketData(issue) {
         systemStatus.currentPrUrl = result.prUrl;
 
         if (result.isNew) {
-            logProgress(`PR Created Successfully: ${result.prUrl} `);
+            logProgress(`PR Created Successfully: ${result.prUrl}`);
 
             // 4. Comment Success & Move to Done
             if (issueKey) {
                 logProgress(`Posting Success comment to Jira...`);
-                await addComment(issueKey, `SUCCESS: Workflow PR created! \nLink: ${result.prUrl} `);
+                await addComment(issueKey, `SUCCESS: Workflow PR created! \nLink: ${result.prUrl}`);
                 await transitionIssue(issueKey, 'Done');
                 logProgress(`Ticket moved to "Done".`);
             }
         } else {
-            logProgress(`PR already exists: ${result.prUrl} `);
+            logProgress(`PR already exists: ${result.prUrl}`);
             if (issueKey) {
                 logProgress(`Updates verified.Moving to Done.`);
-                await addComment(issueKey, `VERIFIED: Workflow PR already exists.\nLink: ${result.prUrl} `);
+                await addComment(issueKey, `VERIFIED: Workflow PR already exists.\nLink: ${result.prUrl}`);
                 await transitionIssue(issueKey, 'Done');
             }
         }
@@ -193,6 +193,7 @@ async function processTicketData(issue) {
             prUrl: result.prUrl,
             repoName,
             branch: result.branch, // Needed for check monitoring
+            payload: workflowYml, // Store payload for UI
             checks: []
         };
         systemStatus.scanHistory.unshift(historyItem);
@@ -200,10 +201,10 @@ async function processTicketData(issue) {
         systemStatus.monitoredTickets.push(historyItem);
 
     } catch (error) {
-        logProgress(`ERROR: ${error.message} `);
-        console.error(`Failed to process ${issueKey}: `, error.message);
+        logProgress(`ERROR: ${error.message}`);
+        console.error(`Failed to process ${issueKey}:`, error.message);
         if (issueKey) {
-            await addComment(issueKey, `FAILURE: Could not create workflow.Error: ${error.message} `);
+            await addComment(issueKey, `FAILURE: Could not create workflow. Error: ${error.message}`);
             logProgress(`Transitioning ticket back to "To Do"...`);
             await transitionIssue(issueKey, 'To Do');
         }
@@ -295,9 +296,9 @@ async function startPolling() {
 
 // Start Server & Polling
 app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT} `);
-    console.log(`GitHub Token present: ${!!process.env.GHUB_TOKEN} `);
-    console.log(`Jira Project: ${process.env.JIRA_PROJECT_KEY} `);
+    console.log(`Server running on port ${PORT}`);
+    console.log(`GitHub Token present: ${!!process.env.GHUB_TOKEN}`);
+    console.log(`Jira Project: ${process.env.JIRA_PROJECT_KEY}`);
 
     setTimeout(startPolling, 1000);
 });

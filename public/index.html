@@ -216,7 +216,7 @@
         /* --- Kanban Board --- */
         .kanban-board {
             display: grid;
-            grid-template-columns: repeat(3, 1fr);
+            grid-template-columns: repeat(4, 1fr);
             gap: 1.5rem;
             flex: 1;
             align-items: start;
@@ -479,10 +479,15 @@
                 <div class="column-header">Processing <span class="count-badge" id="count-progress">0</span></div>
                 <div id="col-progress"></div>
             </div>
-            <!-- DONE -->
+            <!-- CI (Checks Running/Failed) -->
             <div class="column">
-                <div class="column-header">Done <span class="count-badge" id="count-done">0</span></div>
-                <div id="col-done"></div>
+                <div class="column-header">CI Phase <span class="count-badge" id="count-ci">0</span></div>
+                <div id="col-ci"></div>
+            </div>
+            <!-- CD (Ready to Deploy) -->
+            <div class="column">
+                <div class="column-header">CD Phase <span class="count-badge" id="count-cd">0</span></div>
+                <div id="col-cd"></div>
             </div>
         </div>
     </div>
@@ -518,6 +523,10 @@
                 }
                 if (item.prUrl) {
                     actionsHtml += `<a href="${item.prUrl}" target="_blank" class="btn btn-small btn-github" style="text-decoration:none;">PR</a>`;
+                }
+                // Payload Button for History
+                if (item.payload) {
+                    actionsHtml += `<button onclick="openHistoryPayload('${item.key}')" class="btn btn-small btn-payload" style="border:none; border-radius:6px; padding:4px 12px; font-size:0.75rem; font-weight:600; text-transform:uppercase;">YAML</button>`;
                 }
                 actionsHtml += `</div>`;
             }
@@ -569,7 +578,17 @@
             </div>`;
         }
 
+        }
+
+        const payloadCache = new Map();
         let currentPayloadText = "";
+
+        function openHistoryPayload(key) {
+            if (payloadCache.has(key)) {
+                currentPayloadText = payloadCache.get(key);
+                openModal();
+            }
+        }
 
         // Modal Functions
         function openModal() {
@@ -667,9 +686,39 @@
                 document.getElementById('count-progress').innerText = active.length;
                 progressCol.innerHTML = active.length ? active.map(t => createCard(t, 'progress')).join('') : '<div class="empty-state">Empty</div>';
 
-                const doneCol = document.getElementById('col-done');
-                document.getElementById('count-done').innerText = data.scanHistory.length;
-                doneCol.innerHTML = data.scanHistory.length ? data.scanHistory.slice(0, 5).map(t => createCard(t, 'done')).join('') : '<div class="empty-state">Empty</div>';
+                // Update Cache
+                data.scanHistory.forEach(item => {
+                    if (item.payload) payloadCache.set(item.key, item.payload);
+                });
+
+                // Split History into CI vs CD
+                const ciItems = [];
+                const cdItems = [];
+
+                data.scanHistory.forEach(item => {
+                    const checks = item.checks || [];
+                    const hasFailures = checks.some(c => c.conclusion === 'failure');
+                    const allSuccess = checks.length > 0 && checks.every(c => c.conclusion === 'success');
+                    const isPending = checks.some(c => c.status === 'in_progress' || c.status === 'queued') || checks.length === 0;
+
+                    // CD Criteria: All checks pass
+                    if (allSuccess) {
+                        cdItems.push(item);
+                    } else {
+                        // CI Criteria: Failed, Pending, or Empty
+                        ciItems.push(item);
+                    }
+                });
+
+                // Render CI
+                const ciCol = document.getElementById('col-ci');
+                document.getElementById('count-ci').innerText = ciItems.length;
+                ciCol.innerHTML = ciItems.length ? ciItems.slice(0, 5).map(t => createCard(t, 'done')).join('') : '<div class="empty-state">Waiting for Checks...</div>';
+
+                // Render CD
+                const cdCol = document.getElementById('col-cd');
+                document.getElementById('count-cd').innerText = cdItems.length;
+                cdCol.innerHTML = cdItems.length ? cdItems.slice(0, 5).map(t => createCard(t, 'done')).join('') : '<div class="empty-state">Nothing Ready</div>';
 
             } catch (e) { console.error(e); }
         }
