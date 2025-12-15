@@ -144,6 +144,32 @@ describe('githubService', () => {
         });
     });
 
+    describe('generateWorkflowFile with Security', () => {
+        test('should generate CodeQL security job', () => {
+            const yaml = generateWorkflowFile({
+                language: 'node',
+                repoName: 'test/repo',
+                buildCommand: 'npm build',
+                testCommand: 'npm test'
+            });
+            expect(yaml).toContain('security-scan:');
+            expect(yaml).toContain('github/codeql-action/init@v3');
+            expect(yaml).toContain('languages: javascript');
+        });
+
+        test('should include Trivy for docker', () => {
+            const yaml = generateWorkflowFile({
+                language: 'python',
+                repoName: 'test/repo',
+                buildCommand: 'build',
+                testCommand: 'test',
+                deployTarget: 'docker'
+            });
+            expect(yaml).toContain('aquasecurity/trivy-action@master');
+            expect(yaml).toContain('severity: \'CRITICAL,HIGH\'');
+        });
+    });
+
     describe('generateWorkflowFile with Docker', () => {
         test('should generate Docker build/push workflow', () => {
             const yaml = generateWorkflowFile({

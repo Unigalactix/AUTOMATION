@@ -9,6 +9,7 @@ A comprehensive Node.js automation service that bridges Jira and GitHub. It acts
     -   `package.json` → **Node.js**
     -   `*.csproj` / `*.sln` → **.NET**
     -   `requirements.txt` → **Python**
+    -   `pom.xml` / `build.gradle` → **Java**
 -   **Priority Queue**: Processes tickets based on Priority (Highest -> Lowest).
 -   **Stable PR Workflow**: Creates specific feature branches (`chore/{key}-workflow-setup`) and opens Pull Requests.
 -   **Live Dashboard**: Real-time UI at `http://localhost:3000` showing:
@@ -16,6 +17,9 @@ A comprehensive Node.js automation service that bridges Jira and GitHub. It acts
     -   **Live CI/CD Checks**: See the status of checks (e.g., "Build", "Tests") on the cards directly.
     -   Quick Links to Jira Tickets and GitHub PRs.
 -   **mcp-server**: Built-in Model Context Protocol server for AI Agents (Claude Desktop, etc.).
+-   **Security**: Integrated CodeQL & Trivy scans.
+-   **Dynamic Branching**: Automatically detects standard branches (`main`, `master`, `dev`).
+-   **Container Ready**: Generates `Dockerfile` for all Azure Web App deployments.
 
 ## Prerequisites
 
@@ -68,6 +72,18 @@ Execute the Jest unit tests:
 ```bash
 npm test
 ```
+
+## Security Scans 🔒
+
+The generated pipelines include built-in security checks. Here is where to find the results:
+
+1.  **CodeQL (Source Code)**:
+    *   **In PR**: Look for "Code scanning results" checks at the bottom of the Pull Request.
+    *   **Dashboard**: Go to your Repo > **Security** tab > **Code scanning**.
+
+2.  **Trivy (Docker Images)**:
+    *   **In Logs**: Go to the **Actions** tab > Click the workflow run > `docker-build` job.
+    *   **Output**: The logs will show a table listing any defects (e.g., `CVE-2023-XXXX`).
 
 ## AI Integration (MCP) 🤖
 This project includes an **MCP Server** (`mcpServer.js`).

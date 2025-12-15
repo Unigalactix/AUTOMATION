@@ -25,7 +25,8 @@ sequenceDiagram
         loop For Each Ticket
             Autopilot->>Jira: Transition to "In Progress"
             
-            Autopilot->>GitHub: GET /repos/... (Check Default Branch)
+            Autopilot->>GitHub: GET /repos/... (Detect Default Branch: master/main/dev)
+            Autopilot->>GitHub: GET /contents (Detect Language: pom.xml, package.json...)
             Autopilot->>GitHub: POST /git/refs (Create Feature Branch)
             Autopilot->>GitHub: PUT /contents (Commit File)
             Autopilot->>GitHub: POST /pulls (Create Pull Request)
@@ -43,7 +44,7 @@ sequenceDiagram
 ## Generated Workflow Example
 
 For a Jira ticket specifying:
-- **Language**: `node`
+- **Language**: `node`, `python`, `dotnet`, or **`java`**
 - **Repo**: `Unigalactix/sample-node-project`
 - **Build**: `npm run build`
 
@@ -53,7 +54,8 @@ The service generates a **Pull Request** which adds the following `.yml` file:
 name: CI Pipeline - Unigalactix/sample-node-project
 on:
   push:
-    branches: [ "main" ]
+  push:
+    branches: [ "master" ] # Dynamically detected
 jobs:
   build:
     runs-on: ubuntu-latest

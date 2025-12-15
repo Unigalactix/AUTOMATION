@@ -187,6 +187,31 @@
             border-bottom: none;
         }
 
+        .hero-payload {
+            flex: 1;
+            background: #252526;
+            /* VS Code-ish dark */
+            border-radius: 12px;
+            padding: 1.5rem;
+            color: #d4d4d4;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.85rem;
+            overflow-y: auto;
+            max-height: 250px;
+            box-shadow: inset 0 2px 8px rgba(0, 0, 0, 0.3);
+            white-space: pre-wrap;
+            display: none;
+            /* Hidden by default */
+        }
+
+        .payload-header {
+            font-weight: 700;
+            margin-bottom: 8px;
+            color: #9cdcfe;
+            border-bottom: 1px solid #3c3c3c;
+            padding-bottom: 4px;
+        }
+
 
         /* --- Kanban Board --- */
         .kanban-board {
@@ -298,6 +323,95 @@
             font-weight: 700;
             color: var(--primary);
         }
+
+        /* --- Modal --- */
+        .modal-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(2px);
+            display: none;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            opacity: 0;
+            transition: opacity 0.2s ease;
+        }
+
+        .modal-overlay.active {
+            opacity: 1;
+        }
+
+        .modal-content {
+            background: #252526;
+            width: 80%;
+            max-width: 900px;
+            max-height: 80vh;
+            border-radius: 12px;
+            box-shadow: 0 10px 40px rgba(0, 0, 0, 0.4);
+            display: flex;
+            flex-direction: column;
+            transform: scale(0.95);
+            transition: transform 0.2s ease;
+            color: #d4d4d4;
+        }
+
+        .modal-overlay.active .modal-content {
+            transform: scale(1);
+        }
+
+        .modal-header {
+            padding: 1rem 1.5rem;
+            border-bottom: 1px solid #3c3c3c;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .modal-header h3 {
+            margin: 0;
+            font-size: 1.1rem;
+            color: #9cdcfe;
+        }
+
+        .btn-close {
+            background: none;
+            border: none;
+            color: #d4d4d4;
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 0;
+            line-height: 1;
+        }
+
+        .btn-close:hover {
+            color: white;
+        }
+
+        .modal-body {
+            padding: 0;
+            overflow-y: auto;
+            flex: 1;
+            font-family: 'Consolas', 'Monaco', monospace;
+            font-size: 0.9rem;
+        }
+
+        /* Specific style for code block inside modal */
+        #modalPayloadContent {
+            margin: 0;
+            padding: 1.5rem;
+            white-space: pre-wrap;
+        }
+
+        .btn-payload {
+            background-color: #6554C0;
+            /* Purple */
+            color: white;
+            cursor: pointer;
+        }
     </style>
 </head>
 
@@ -334,11 +448,23 @@
                             style="filter: brightness(0) invert(1);">
                         View Pull Request
                     </a>
+                    <button class="btn btn-payload" id="btnPayload" onclick="openModal()" disabled>
+                        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                            stroke-width="2" style="vertical-align: text-bottom;">
+                            <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                            <polyline points="14 2 14 8 20 8"></polyline>
+                            <line x1="16" y1="13" x2="8" y2="13"></line>
+                            <line x1="16" y1="17" x2="8" y2="17"></line>
+                            <polyline points="10 9 9 9 8 9"></polyline>
+                        </svg>
+                        View Payload
+                    </button>
                 </div>
             </div>
             <div class="hero-logs" id="logTerminal">
                 <div class="log-entry">> System ready. Waiting for tasks...</div>
             </div>
+            <!-- Payload Viewer Removed (Moved to Modal) -->
         </div>
 
         <!-- Kanban Board -->
@@ -357,6 +483,19 @@
             <div class="column">
                 <div class="column-header">Done <span class="count-badge" id="count-done">0</span></div>
                 <div id="col-done"></div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal Elements -->
+    <div id="payloadModal" class="modal-overlay" onclick="closeModal(event)">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h3>Generated Workflow YAML</h3>
+                <button onclick="closeModal()" class="btn-close">×</button>
+            </div>
+            <div class="modal-body">
+                <pre id="modalPayloadContent"></pre>
             </div>
         </div>
     </div>
@@ -392,14 +531,19 @@
                     let statusText = c.conclusion || c.status;
                     let icon = '⚫';
 
-                    if (c.conclusion === 'success') { color = '#006644'; icon = '✅'; }
-                    else if (c.conclusion === 'failure') { color = '#DE350B'; icon = '❌'; }
+                    const lowerName = c.name.toLowerCase();
+                    const isSecurity = lowerName.includes('security') || lowerName.includes('codeql') || lowerName.includes('trivy');
+
+                    if (c.conclusion === 'success') {
+                        color = '#006644';
+                        icon = isSecurity ? '🛡️' : '✅';
+                    }
+                    else if (c.conclusion === 'failure') {
+                        color = '#DE350B';
+                        icon = isSecurity ? '🛡️ ❌' : '❌';
+                    }
                     else if (c.conclusion === 'cancelled') { color = '#FF991F'; icon = '⚠️'; }
                     else if (c.status === 'in_progress') { color = '#0052CC'; icon = '⏳'; }
-
-                    // Cleanup name if it's too long or repetitive? 
-                    // GitHub often sends "Workflow / Job (event)"
-                    // For now, raw name is safest as requested.
 
                     checksHtml += `
                     <div style="font-size:0.75rem; color:${color}; display:flex; align-items:center; justify-content:space-between;">
@@ -425,6 +569,28 @@
             </div>`;
         }
 
+        let currentPayloadText = "";
+
+        // Modal Functions
+        function openModal() {
+            const modal = document.getElementById('payloadModal');
+            document.getElementById('modalPayloadContent').innerText = currentPayloadText;
+            modal.style.display = "flex";
+            // Trigger reflow for transition
+            setTimeout(() => modal.classList.add('active'), 10);
+        }
+
+        function closeModal(e) {
+            // Close if clicked button or overlay (but not content)
+            if (e && e.target !== e.currentTarget && e.target.tagName !== 'BUTTON') return;
+
+            const modal = document.getElementById('payloadModal');
+            modal.classList.remove('active');
+            setTimeout(() => {
+                if (!modal.classList.contains('active')) modal.style.display = "none";
+            }, 200);
+        }
+
         async function fetchStatus() {
             try {
                 const res = await fetch('/api/status');
@@ -444,6 +610,7 @@
                 const logTerm = document.getElementById('logTerminal');
                 const btnJira = document.getElementById('btnJira');
                 const btnGithub = document.getElementById('btnGithub');
+                const btnPayload = document.getElementById('btnPayload');
 
                 if (data.currentTicketKey) {
                     hero.classList.remove('idle');
@@ -462,6 +629,15 @@
                         btnGithub.setAttribute('disabled', 'true');
                     }
 
+                    // Payload Button Logic
+                    if (data.currentPayload) {
+                        currentPayloadText = data.currentPayload;
+                        btnPayload.removeAttribute('disabled');
+                    } else {
+                        btnPayload.setAttribute('disabled', 'true');
+                        currentPayloadText = "";
+                    }
+
                     // Logs
                     logTerm.innerHTML = data.currentTicketLogs.map(l => `<div class="log-entry">${l}</div>`).join('');
                     logTerm.scrollTop = logTerm.scrollHeight;
@@ -472,6 +648,8 @@
                     document.getElementById('currentTicketKey').innerText = 'Waiting...';
                     btnJira.setAttribute('disabled', 'true');
                     btnGithub.setAttribute('disabled', 'true');
+                    btnPayload.setAttribute('disabled', 'true');
+                    currentPayloadText = "";
 
                     if (data.currentPhase === 'Scanning') {
                         logTerm.innerHTML = `<div class="log-entry">> Scanning Jira for new tickets...</div>`;

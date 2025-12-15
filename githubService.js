@@ -41,6 +41,17 @@ WORKDIR /app
 COPY --from=build /app/publish .
 ENTRYPOINT ["dotnet", "App.dll"]`;
     }
+    if (language === 'java') {
+        return `FROM eclipse-temurin:17-jdk-alpine AS build
+WORKDIR /app
+COPY . .
+RUN ./mvnw clean package -DskipTests
+
+FROM eclipse-temurin:17-jre-alpine
+WORKDIR /app
+COPY --from=build /app/target/*.jar app.jar
+ENTRYPOINT ["java", "-jar", "app.jar"]`;
+    }
     return `# No default Dockerfile for ${language}`;
 }
 
@@ -52,9 +63,10 @@ ENTRYPOINT ["dotnet", "App.dll"]`;
  * @param {string} config.buildCommand - The build command
  * @param {string} config.testCommand - The test command
  * @param {string} [config.deployTarget] - 'azure-webapp' | 'docker'
+ * @param {string} [config.defaultBranch] - Default branch name (e.g. 'main', 'master')
  * @returns {string} The generated YAML content.
  */
-function generateWorkflowFile({ language, repoName, buildCommand, testCommand, deployTarget }) {
+function generateWorkflowFile({ language, repoName, buildCommand, testCommand, deployTarget, defaultBranch = 'main' }) {
 
     // Language-specific setup steps
     const languageSteps = {
@@ -68,6 +80,8 @@ function generateWorkflowFile({ language, repoName, buildCommand, testCommand, d
       - name: Running NPM Audit
         run: |
           if [ -f "package-lock.json" ]; then
+            echo "Using npm for dependency checks"
+            npm install
             npm audit --production --json || true
           fi`,
 
@@ -85,19 +99,56 @@ function generateWorkflowFile({ language, repoName, buildCommand, testCommand, d
         with:
           dotnet-version: '8.0.x'
       - name: Restore dependencies
-        run: dotnet restore`
+        run: dotnet restore`,
+
+        'java': `
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+          cache: maven
+      - name: Build with Maven
+        run: ./mvnw clean package`
     };
 
     // Default to node if language not found
     const setupSteps = languageSteps[language] || languageSteps['node'];
 
-    // Optional Deployment Job Construction
+    // --- Security Job (CodeQL) ---
+    const codeqlMap = {
+        'node': 'javascript',
+        'python': 'python',
+        'dotnet': 'csharp',
+        'java': 'java'
+    };
+    const codeqlLang = codeqlMap[language] || 'javascript';
+
+    const securityJob = `
+  security-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: ${codeqlLang}
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3`;
+
+    // --- Deployment Job ---
     let deployJob = '';
     if (deployTarget === 'azure-webapp') {
         deployJob = `
   deploy:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, security-scan]
     environment: Production
     steps:
       - name: Checkout Repository
@@ -112,7 +163,7 @@ function generateWorkflowFile({ language, repoName, buildCommand, testCommand, d
         deployJob = `
   docker-build:
     runs-on: ubuntu-latest
-    needs: build
+    needs: [build, security-scan]
     permissions:
       contents: read
       packages: write
@@ -129,14 +180,30 @@ function generateWorkflowFile({ language, repoName, buildCommand, testCommand, d
         with:
           context: .
           push: true
-          tags: ghcr.io/\${{ github.repository }}:latest`;
+          tags: ghcr.io/\${{ github.repository }}:latest
+      - name: Run Trivy Vulnerability Scanner
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: 'ghcr.io/\${{ github.repository }}:latest'
+          format: 'table'
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: 'os,library'
+          severity: 'CRITICAL,HIGH'
+        env:
+          TRIVY_USERNAME: \${{ github.actor }}
+          TRIVY_PASSWORD: \${{ secrets.GITHUB_TOKEN }}`;
     }
 
     const yamlContent = `
 name: CI Pipeline - ${repoName}
 on:
     push:
-        branches: [ "main" ]
+        branches: [ "${defaultBranch}" ]
+    pull_request:
+        branches: [ "${defaultBranch}" ]
+env:
+  CI: true
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -147,6 +214,9 @@ ${setupSteps}
         run: ${buildCommand}
       - name: Test
         run: ${testCommand}
+
+${securityJob}
+
 ${deployJob}
 `;
 
@@ -271,13 +341,15 @@ async function createWorkflowPR({ owner, repo, featureBranch, defaultBranch, tit
 /**
  * Orchestrates the PR Workflow.
  */
-async function createPullRequestForWorkflow({ repoName, filePath, content, language, issueKey, deployTarget }) {
+async function createPullRequestForWorkflow({ repoName, filePath, content, language, issueKey, deployTarget, defaultBranch }) {
     try {
         const [owner, repo] = repoName.split('/');
 
-        // 1. Get Repo Default Branch
-        const { data: repoData } = await octokit.repos.get({ owner, repo });
-        const defaultBranch = repoData.default_branch;
+        // 1. Get Repo Default Branch (if not provided)
+        if (!defaultBranch) {
+            const { data: repoData } = await octokit.repos.get({ owner, repo });
+            defaultBranch = repoData.default_branch;
+        }
         console.log(`Detected default branch: ${defaultBranch}`);
 
         // 2. Define Feature Branch Name
@@ -288,8 +360,8 @@ async function createPullRequestForWorkflow({ repoName, filePath, content, langu
         // 3. Ensure Branch Exists
         await ensureFeatureBranch({ owner, repo, defaultBranch, featureBranch });
 
-        // 3a. Handle Dockerfile for Docker Deployment
-        if (deployTarget === 'docker') {
+        // 3a. Handle Dockerfile for Docker Deployment OR Azure Web App (Container Ready)
+        if (deployTarget === 'docker' || deployTarget === 'azure-webapp') {
             const dockerfilePath = 'Dockerfile';
             try {
                 // Check if it exists on the feature branch (or default if brand new branch copy)
@@ -395,6 +467,10 @@ async function detectRepoLanguage(repoName) {
             console.log('Detected Python project.');
             return 'python';
         }
+        if (fileNames.includes('pom.xml') || fileNames.includes('build.gradle') || fileNames.includes('build.gradle.kts')) {
+            console.log('Detected Java project.');
+            return 'java';
+        }
 
         console.log('No specific marker found, defaulting to node.');
         return 'node';
@@ -405,9 +481,25 @@ async function detectRepoLanguage(repoName) {
     }
 }
 
+/**
+ * Gets the default branch of the repo.
+ */
+async function getDefaultBranch(repoName) {
+    console.log(`Getting default branch for ${repoName}...`);
+    try {
+        const [owner, repo] = repoName.split('/');
+        const { data: repoData } = await octokit.repos.get({ owner, repo });
+        return repoData.default_branch;
+    } catch (error) {
+        console.error(`Failed to get default branch for ${repoName}: ${error.message}`);
+        return 'main'; // Safe default
+    }
+}
+
 module.exports = {
     generateWorkflowFile, createPullRequestForWorkflow, getPullRequestChecks,
     detectRepoLanguage,
-    generateDockerfile
+    generateDockerfile,
+    getDefaultBranch
 };
 
