@@ -489,6 +489,147 @@ async function detectRepoLanguage(repoName) {
 }
 
 /**
+ * Fetches and parses repository instructions to tailor build commands.
+ * Priority: .github/instructions.md -> .github/agents.md -> README.md
+ */
+async function getRepoInstructions(repoName) {
+    console.log(`Analyzing repository ${repoName} for instructions...`);
+    const [owner, repo] = repoName.split('/');
+
+    const possibleFiles = ['.github/instructions.md', '.github/agents.md', 'README.md'];
+
+    for (const path of possibleFiles) {
+        try {
+            const { data } = await octokit.repos.getContent({
+                owner,
+                repo,
+                path
+            });
+
+            // Content is base64 encoded
+            const content = Buffer.from(data.content, 'base64').toString('utf-8');
+            console.log(`Found instructions in: ${path}`);
+
+            // Simple parsing logic (Case insensitive)
+            // Looks for "Build Command: `npm run build`" or "Test Command: 'npm test'"
+            const buildMatch = content.match(/Build Command:\s*(`[^`]+`|"[^"]+"|'[^']+'|[^\n]+)/i);
+            const testMatch = content.match(/Test Command:\s*(`[^`]+`|"[^"]+"|'[^']+'|[^\n]+)/i);
+
+            const result = {};
+
+            if (buildMatch) {
+                // Remove backticks or quotes if present
+                result.buildCommand = buildMatch[1].replace(/[`"']/g, '').trim();
+                console.log(`Discovered Build Command: ${result.buildCommand}`);
+            }
+            if (testMatch) {
+                result.testCommand = testMatch[1].replace(/[`"']/g, '').trim();
+                console.log(`Discovered Test Command: ${result.testCommand}`);
+            }
+
+            if (result.buildCommand || result.testCommand) {
+                return result;
+            }
+
+        } catch (error) {
+            // File not found, continue
+        }
+    }
+
+    return {};
+}
+
+/**
+ * Deep scan of repo configuration to infer build/test commands.
+ * Reads package.json, pom.xml, .sln, requirements.txt, etc.
+ */
+async function analyzeRepoStructure(repoName) {
+    console.log(`Deep analyzing repository structure for ${repoName}...`);
+    const [owner, repo] = repoName.split('/');
+    const result = {};
+
+    try {
+        const { data: files } = await octokit.repos.getContent({ owner, repo, path: '' });
+        const fileNames = files.map(f => f.name);
+
+        // --- Node.js (package.json) ---
+        if (fileNames.includes('package.json')) {
+            try {
+                const { data } = await octokit.repos.getContent({ owner, repo, path: 'package.json' });
+                const content = JSON.parse(Buffer.from(data.content, 'base64').toString('utf-8'));
+
+                if (content.scripts) {
+                    if (content.scripts.build) result.buildCommand = 'npm run build';
+                    else if (content.scripts.compile) result.buildCommand = 'npm run compile';
+
+                    if (content.scripts.test) result.testCommand = 'npm test';
+                }
+                console.log('Analyzed package.json:', result);
+                return result; // Return early if Node found
+            } catch (e) {
+                console.error('Failed to parse package.json', e);
+            }
+        }
+
+        // --- Java (Maven/Gradle) ---
+        if (fileNames.includes('pom.xml')) {
+            // Check for wrapper
+            const hasWrapper = await fileExists(owner, repo, 'mvnw'); // Helper needed or assumed check
+            result.buildCommand = hasWrapper ? './mvnw clean package' : 'mvn clean package';
+            result.testCommand = hasWrapper ? './mvnw test' : 'mvn test';
+            console.log('Analyzed pom.xml (Maven):', result);
+            return result;
+        }
+        if (fileNames.includes('build.gradle') || fileNames.includes('build.gradle.kts')) {
+            const hasWrapper = await fileExists(owner, repo, 'gradlew');
+            result.buildCommand = hasWrapper ? './gradlew build' : 'gradle build';
+            result.testCommand = hasWrapper ? './gradlew test' : 'gradle test';
+            console.log('Analyzed build.gradle:', result);
+            return result;
+        }
+
+        // --- .NET (.sln / .csproj) ---
+        const slnFile = fileNames.find(f => f.endsWith('.sln'));
+        if (slnFile) {
+            result.buildCommand = `dotnet build ${slnFile}`;
+            result.testCommand = 'dotnet test';
+            console.log(`Analyzed .sln (${slnFile}):`, result);
+            return result;
+        }
+        const csprojFile = fileNames.find(f => f.endsWith('.csproj'));
+        if (csprojFile) {
+            result.buildCommand = `dotnet build ${csprojFile}`;
+            result.testCommand = 'dotnet test';
+            console.log(`Analyzed .csproj (${csprojFile}):`, result);
+            return result;
+        }
+
+        // --- Python (requirements.txt) ---
+        if (fileNames.includes('requirements.txt')) {
+            // Simple inference
+            result.buildCommand = 'pip install -r requirements.txt';
+            result.testCommand = 'pytest';
+            // Could verify pytest existence by reading requirements.txt but keeping it fast for now
+            console.log('Analyzed requirements.txt:', result);
+            return result;
+        }
+
+    } catch (error) {
+        console.error(`Deep analysis failed for ${repoName}: ${error.message}`);
+    }
+
+    return result;
+}
+
+// Helper to check file existence without fetching content
+async function fileExists(owner, repo, path) {
+    try {
+        await octokit.repos.getContent({ owner, repo, path });
+        return true;
+    } catch (e) { return false; }
+}
+
+/**
  * Gets the default branch of the repo.
  */
 async function getDefaultBranch(repoName) {
@@ -507,6 +648,8 @@ module.exports = {
     generateWorkflowFile, createPullRequestForWorkflow, getPullRequestChecks,
     detectRepoLanguage,
     generateDockerfile,
+    analyzeRepoStructure,
+    getRepoInstructions,
     getDefaultBranch
 };
 

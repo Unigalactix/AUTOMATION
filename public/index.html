@@ -216,7 +216,7 @@
         /* --- Kanban Board --- */
         .kanban-board {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(5, 1fr);
             gap: 1.5rem;
             flex: 1;
             align-items: start;
@@ -474,6 +474,11 @@
                 <div class="column-header">Queue <span class="count-badge" id="count-todo">0</span></div>
                 <div id="col-todo"></div>
             </div>
+            <!-- ANALYZING (Reading Repo) -->
+            <div class="column">
+                <div class="column-header">Analyzing <span class="count-badge" id="count-analyzing">0</span></div>
+                <div id="col-analyzing"></div>
+            </div>
             <!-- IN PROGRESS -->
             <div class="column">
                 <div class="column-header">Processing <span class="count-badge" id="count-progress">0</span></div>
@@ -677,12 +682,17 @@
 
                 // 3. Kanban Columns
                 const todoCol = document.getElementById('col-todo');
-                const queued = data.activeTickets.filter(t => !t.status.includes('Processing'));
+                const queued = data.activeTickets.filter(t => !t.status.includes('Processing') && !t.status.includes('Analyzing') && !t.status.includes('Generating') && !t.status.includes('Scanning'));
                 document.getElementById('count-todo').innerText = queued.length;
                 todoCol.innerHTML = queued.length ? queued.map(t => createCard(t, 'todo')).join('') : '<div class="empty-state">Empty</div>';
 
+                const analyzingCol = document.getElementById('col-analyzing');
+                const analyzing = data.activeTickets.filter(t => t.status.includes('Analyzing') || t.status.includes('Scanning'));
+                document.getElementById('count-analyzing').innerText = analyzing.length;
+                analyzingCol.innerHTML = analyzing.length ? analyzing.map(t => createCard(t, 'progress')).join('') : '<div class="empty-state">Empty</div>';
+
                 const progressCol = document.getElementById('col-progress');
-                const active = data.activeTickets.filter(t => t.status.includes('Processing'));
+                const active = data.activeTickets.filter(t => t.status.includes('Generating') || t.status.includes('Committing'));
                 document.getElementById('count-progress').innerText = active.length;
                 progressCol.innerHTML = active.length ? active.map(t => createCard(t, 'progress')).join('') : '<div class="empty-state">Empty</div>';
 
