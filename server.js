@@ -184,7 +184,7 @@ async function processTicketData(issue) {
             issueKey, // Pass issueKey for stable branching
             deployTarget, // Pass deploy target for Dockerfile generation logic
             defaultBranch,
-            ticketData: { ...ticketData, buildCommand, testCommand, description }
+            ticketData: { ...ticketData, buildCommand, testCommand }
         });
 
         systemStatus.currentPrUrl = result.prUrl;
