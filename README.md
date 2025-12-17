@@ -12,6 +12,7 @@ A comprehensive Node.js automation service that bridges Jira and GitHub. It acts
     -   `pom.xml` / `build.gradle` → **Java**
 -   **Priority Queue**: Processes tickets based on Priority (Highest -> Lowest).
 -   **Stable PR Workflow**: Creates specific feature branches (`chore/{key}-workflow-setup`) and opens Pull Requests.
+-   **Persistent Logging**: Server activity is logged to `logs/server.log`.
 -   **Live Dashboard**: Real-time UI at `http://localhost:3000` showing:
     -   Active Queue & History
     -   **Live CI/CD Checks**: See the status of checks (e.g., "Build", "Tests") on the cards directly.
@@ -20,6 +21,21 @@ A comprehensive Node.js automation service that bridges Jira and GitHub. It acts
 -   **Security**: Integrated CodeQL scans.
 -   **Dynamic Branching**: Automatically detects standard branches (`main`, `master`, `dev`).
 -   **Container Ready**: Generates `Dockerfile` for all Azure Web App deployments.
+
+## CLI Paths
+
+-   **GitHub CLI (gh)**: `C:\Program Files\GitHub CLI\gh.exe`
+-   **Git (git)**: `C:\Program Files\Git\cmd\git.exe`
+
+## Container Registry (ACR Only)
+
+-   **Registry**: `mvacrdemo.azurecr.io`
+-   **GitHub Secrets required**:
+    -   `ACR_LOGIN_SERVER` = `mvacrdemo.azurecr.io`
+    -   `ACR_USERNAME` = ACR admin or service principal appId
+    -   `ACR_PASSWORD` = ACR password or service principal secret
+-   **Tag format**: `${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:latest` and `:${{ github.sha }}`
+-   The workflow computes `REPO_LOWER` from `${{ github.repository }}` to ensure lowercase tags.
 
 ## Prerequisites
 
@@ -102,7 +118,7 @@ Add this to your Claude Desktop config to give your AI access to the agent's too
 
 ## Architecture
 
-See [automation_workflow.md](./automation_workflow.md) for a detailed sequence diagram.
+See [agents.md](./agents.md) for detailed agent specifications and workflow diagrams.
 
 ## License
 

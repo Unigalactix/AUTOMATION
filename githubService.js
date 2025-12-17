@@ -142,11 +142,11 @@ function generateWorkflowFile({ language, repoName, buildCommand, testCommand, d
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3`;
 
-        // --- Docker Build Job (Container Ready) ---
-        let dockerJob = '';
-        // Generate Docker build for 'docker' AND 'azure-webapp' using ACR only
-                if (deployTarget === 'docker' || deployTarget === 'azure-webapp') {
-                        dockerJob = `
+    // --- Docker Build Job (Container Ready) ---
+    let dockerJob = '';
+    // Generate Docker build for 'docker' AND 'azure-webapp' using ACR only
+    if (deployTarget === 'docker' || deployTarget === 'azure-webapp') {
+        dockerJob = `
     docker-build:
         if: github.event_name == 'push'
         runs-on: ubuntu-latest
@@ -170,7 +170,7 @@ function generateWorkflowFile({ language, repoName, buildCommand, testCommand, d
                     push: true
                     tags: \${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:latest,\${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:\${{ github.sha }}
             `;
-                }
+    }
 
     // --- Azure Deployment Job ---
     let deployJob = '';
@@ -357,7 +357,7 @@ function generateCopilotPrompt({ issueKey, summary, description, repoConfig, rep
 
 ${description || ''}
 
-Please generate a CI/CD pipeline file for this repo in the format below:
+Please generate a CI/CD pipeline file for this repo in the format below(ignore if already exists and working):
 
 \`\`\`yaml
 name: CI Pipeline - ${REPO_NAME}
@@ -861,6 +861,156 @@ async function triggerExistingWorkflow({ repoName, workflowFile, ref, inputs }) 
     });
 }
 
+/**
+ * Attempts to detect a Copilot-generated sub PR linked from comments on the main PR.
+ * Fallback: scan open PRs for likely Copilot PRs.
+ */
+async function findCopilotSubPR({ repoName, mainPrNumber }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        // 0. Get Main PR to know its "Head" (Feature Branch)
+        const { data: mainPr } = await octokit.pulls.get({ owner, repo, pull_number: mainPrNumber });
+        const featureBranch = mainPr.head.ref;
+
+        // 1. Scan PR comments for a PR URL (Explicit linking)
+        const { data: comments } = await octokit.issues.listComments({ owner, repo, issue_number: mainPrNumber });
+        const prUrlRegex = new RegExp(`https://github.com/${owner}/${repo}/pull/\\d+`, 'i');
+        for (const c of comments) {
+            const m = c.body && c.body.match(prUrlRegex);
+            if (m) {
+                const url = m[0];
+                const num = parseInt(url.split('/').pop(), 10);
+                const { data: pr } = await octokit.pulls.get({ owner, repo, pull_number: num });
+                // Verify it targets our branch
+                if (pr.base.ref === featureBranch) return pr;
+            }
+        }
+
+        // 2. Robust Fallback: List open PRs targeting the Feature Branch
+        const { data: openPRs } = await octokit.pulls.list({ owner, repo, state: 'open', base: featureBranch });
+
+        // Return the most recent one if multiple (unlikely)
+        if (openPRs.length > 0) {
+            console.log(`Found ${openPRs.length} PRs targeting ${featureBranch}. Using #${openPRs[0].number}`);
+            return openPRs[0];
+        }
+
+        // 3. Last Resort: Name/User match (if it targets something else? Unlikely useful)
+        // Kept for backward compat if base logic fails
+        const { data: allOpen } = await octokit.pulls.list({ owner, repo, state: 'open' });
+        const likely = allOpen.find(p =>
+            ((p.user && /copilot|github-actions/i.test(p.user.login || '')) ||
+                /copilot|automation|suggest/i.test(p.title || '')) &&
+            p.number !== mainPrNumber // Don't pick self
+        );
+        return likely || null;
+
+    } catch (e) {
+        console.warn('findCopilotSubPR failed:', e.message);
+        return null;
+    }
+}
+
+/**
+ * Merge the head branch of a sub PR into a base branch (feature branch of the main PR).
+ * Uses the GitHub merge endpoint to create a merge commit.
+ */
+async function mergeSubPRIntoBranch({ repoName, baseBranch, subPr }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        const headBranch = subPr.head.ref;
+        const commitMessage = `chore: merge Copilot PR #${subPr.number} (${headBranch}) into ${baseBranch}`;
+        await octokit.repos.merge({ owner, repo, base: baseBranch, head: headBranch, commit_message: commitMessage });
+        return { merged: true };
+    } catch (e) {
+        if (e.status === 409) {
+            // Merge conflict
+            return { merged: false, conflict: true, message: e.message };
+        }
+        console.warn('mergeSubPRIntoBranch failed:', e.message);
+        return { merged: false, message: e.message };
+    }
+}
+
+/**
+ * Delete a branch from the repository.
+ */
+async function deleteBranch({ repoName, branchName }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        await octokit.git.deleteRef({ owner, repo, ref: `heads/${branchName}` });
+        return { deleted: true };
+    } catch (e) {
+        console.warn(`Failed to delete branch ${branchName}:`, e.message);
+        return { deleted: false, error: e.message };
+    }
+}
+
+/**
+ * Marks a PR as Ready for Review (undraft).
+ */
+async function markPullRequestReadyForReview({ repoName, pullNumber }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        await octokit.pulls.update({
+            owner,
+            repo,
+            pull_number: pullNumber,
+            draft: false
+        });
+        console.log(`PR #${pullNumber} marked as Ready for Review.`);
+        return { success: true };
+    } catch (e) {
+        console.warn(`Failed to undraft PR #${pullNumber}:`, e.message);
+        return { success: false, error: e.message };
+    }
+}
+
+/**
+ * Merges a Pull Request using the high-level API.
+ */
+async function mergePullRequest({ repoName, pullNumber, method = 'squash' }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        await octokit.pulls.merge({
+            owner,
+            repo,
+            pull_number: pullNumber,
+            merge_method: method
+        });
+        return { merged: true };
+    } catch (e) {
+        return { merged: false, message: e.message };
+    }
+}
+
+module.exports = {
+    generateWorkflowFile,
+    createPullRequestForWorkflow,
+    getPullRequestChecks,
+    detectRepoLanguage,
+    getRepoInstructions,
+    analyzeRepoStructure,
+    getDefaultBranch,
+    findCopilotSubPR,
+    mergeSubPRIntoBranch,
+    getPullRequestDetails,
+    hasExistingWorkflow,
+    triggerExistingWorkflow,
+    deleteBranch,
+    markPullRequestReadyForReview,
+    mergePullRequest
+};
+
+/**
+ * Get details for a PR by number.
+ */
+async function getPullRequestDetails({ repoName, pull_number }) {
+    const [owner, repo] = repoName.split('/');
+    const { data } = await octokit.pulls.get({ owner, repo, pull_number });
+    return data;
+}
+
 module.exports = {
     generateWorkflowFile, createPullRequestForWorkflow, getPullRequestChecks,
     detectRepoLanguage,
@@ -869,6 +1019,9 @@ module.exports = {
     getRepoInstructions,
     getDefaultBranch,
     hasExistingWorkflow,
-    triggerExistingWorkflow
+    triggerExistingWorkflow,
+    findCopilotSubPR,
+    mergeSubPRIntoBranch,
+    getPullRequestDetails
 };
 

@@ -1,4 +1,6 @@
 const express = require('express');
+const fs = require('fs');
+const path = require('path');
 const {
     generateWorkflowFile,
     createPullRequestForWorkflow,
@@ -6,7 +8,15 @@ const {
     detectRepoLanguage,
     getRepoInstructions,
     analyzeRepoStructure,
-    getDefaultBranch
+    getDefaultBranch,
+    findCopilotSubPR,
+    mergeSubPRIntoBranch,
+    getPullRequestDetails,
+    hasExistingWorkflow,
+    triggerExistingWorkflow,
+    deleteBranch,
+    markPullRequestReadyForReview,
+    mergePullRequest
 } = require('./githubService');
 const { getPendingTickets, transitionIssue, addComment } = require('./jiraService');
 require('dotenv').config();
@@ -33,6 +43,21 @@ let systemStatus = {
 };
 
 const repoLanguageCache = new Map();
+
+// Ensure logs directory exists
+const LOG_DIR = path.join(__dirname, 'logs');
+if (!fs.existsSync(LOG_DIR)) {
+    fs.mkdirSync(LOG_DIR);
+}
+
+function writeLog(message) {
+    const logFile = path.join(LOG_DIR, 'server.log');
+    const timestamp = new Date().toISOString();
+    const cleanMessage = `[${timestamp}] ${message}\n`;
+    fs.appendFile(logFile, cleanMessage, (err) => {
+        if (err) console.error('Failed to write to log file:', err);
+    });
+}
 
 app.use(express.json());
 app.use(express.static('public')); // Serve UI
@@ -66,6 +91,7 @@ function logProgress(message) {
     const logEntry = `[${timestamp}] ${message} `;
     console.log(logEntry);
     systemStatus.currentTicketLogs.push(logEntry);
+    writeLog(message);
 }
 
 // --- Core Logic ---
@@ -94,6 +120,40 @@ async function processTicketData(issue) {
     }
 
     const ticketData = issue.fields;
+
+    // --- Helper: Parse Jira ADF to Markdown ---
+    function parseJiraADF(node) {
+        if (!node) return '';
+        if (typeof node === 'string') return node;
+
+        if (node.type === 'text') return node.text;
+
+        if (node.content) {
+            return node.content.map(child => {
+                let text = parseJiraADF(child);
+                if (child.type === 'paragraph') return text + '\n\n';
+                if (child.type === 'hardBreak') return '\n';
+                if (child.type === 'listItem') {
+                    // remove extra newlines from paragraph inside list item
+                    return '- ' + text.trim() + '\n';
+                }
+                return text;
+            }).join('');
+        }
+        return '';
+    }
+
+    // Normalize Description (Jira Cloud uses ADF objects)
+    if (ticketData.description) {
+        if (typeof ticketData.description === 'string') {
+            // Already string
+        } else {
+            // It's an ADF object, parse it
+            ticketData.description = parseJiraADF(ticketData.description);
+        }
+    } else {
+        ticketData.description = '';
+    }
 
     // Determine Project Key from Issue Key (e.g. NDE-123 -> NDE)
     const projectKey = issueKey.split('-')[0];
@@ -296,7 +356,9 @@ async function processTicketData(issue) {
             payload: workflowYml, // Store payload for UI
             language, // [NEW] for UI
             deployTarget, // [NEW] for UI
-            checks: []
+            checks: [],
+            copilotPrUrl: null,
+            copilotMerged: false
         };
         systemStatus.scanHistory.unshift(historyItem);
         // Add to monitored list
@@ -401,6 +463,80 @@ async function startPolling() {
                     // Update the check status in history
                     // We need to find the history item and update it (ticket is a reference to history item if pushed directly)
                     ticket.checks = checks;
+
+                    // Attempt to detect and merge Copilot sub PR into our feature branch
+                    if (!ticket.copilotMerged && ticket.prUrl) {
+                        try {
+                            const mainPrNumber = parseInt(ticket.prUrl.split('/').pop(), 10);
+                            const mainPr = await getPullRequestDetails({ repoName: ticket.repoName, pull_number: mainPrNumber });
+                            const subPr = await findCopilotSubPR({ repoName: ticket.repoName, mainPrNumber });
+                            if (subPr) {
+                                ticket.copilotPrUrl = subPr.html_url;
+                                const hasWipLabel = Array.isArray(subPr.labels) && subPr.labels.some(l => /\bWIP\b/i.test(l.name || ''));
+                                const isWipTitle = /\bWIP\b/i.test(subPr.title || '');
+                                // const isDraft = !!subPr.draft; // User Requested to ignore Draft as a blocker
+
+                                // Only block if explicit WIP title
+                                const isWorkInProgress = isWipTitle; // (or hasWipLabel if we wanted to be stricter, but user said 'marked WIP' check title)
+
+                                if (!isWorkInProgress) {
+                                    // If it's a draft, we must undraft it before merging (using pulls.merge)
+                                    if (subPr.draft) {
+                                        console.log(`[Autopilot] SubPR #${subPr.number} is Draft. Mark as Ready for Review...`);
+                                        await markPullRequestReadyForReview({ repoName: ticket.repoName, pullNumber: subPr.number });
+                                    }
+
+                                    // Use Merge PR endpoint (High Level)
+                                    const mergeRes = await mergePullRequest({ repoName: ticket.repoName, pullNumber: subPr.number });
+
+                                    if (mergeRes.merged) {
+                                        ticket.copilotMerged = true;
+                                        logProgress(`Copilot revisions merged for ${ticket.key}. Posting comment...`);
+                                        await addComment(ticket.key, `🤖 **Copilot Update**: I have merged the proposed changes into the feature branch.\n\nRunning checks... ⏳\n[View Actions](${ticket.repoName ? `https://github.com/${ticket.repoName}/actions` : '#'})`);
+                                    } else {
+                                        console.log(`[Autopilot] ⚠️ Merge failed for SubPR #${subPr.number}: ${mergeRes.message}`);
+                                    }
+                                } else {
+                                    console.log(`[Autopilot] ⏳ SubPR #${subPr.number} detected but marked WIP. Waiting... (Title: "${subPr.title}")`);
+                                }
+                            }
+                        } catch (e) {
+                            // Non-blocking; continue monitoring
+                            console.error(`[Autopilot] ⚠️ Error in monitorChecks for ${ticket.key}:`, e.message);
+                        }
+                    }
+
+                    // Check for Deployment Success
+                    if (!ticket.deploymentPosted && ticket.checks && ticket.checks.length > 0) {
+                        const deployCheck = ticket.checks.find(c => c.name === 'deploy' && c.conclusion === 'success');
+                        if (deployCheck) {
+                            ticket.deploymentPosted = true;
+                            logProgress(`Deployment detected for ${ticket.key}. Posting comment...`);
+                            // Hardcoded app name for now as per plan
+                            const appUrl = 'https://mvdemoapp.azurewebsites.net';
+                            await addComment(ticket.key, `🚀 **Deployment Successful!**\n\nThe application is live at: [${appUrl}](${appUrl})\n\n[View Deployment Logs](${deployCheck.url})`);
+
+                            // Cleanup: Delete Copilot Branch if it was merged
+                            if (ticket.copilotMerged && ticket.copilotPrUrl) {
+                                // Extract branch name from PR URL? No, we didn't store branch name explicitly.
+                                // But we can get it from the cached PR URL or by fetching the PR again.
+                                // Optimally, we should have stored it. Let's try to fetch it quickly.
+                                try {
+                                    const prNum = parseInt(ticket.copilotPrUrl.split('/').pop(), 10);
+                                    if (!isNaN(prNum)) {
+                                        const subPrDetails = await getPullRequestDetails({ repoName: ticket.repoName, pull_number: prNum });
+                                        if (subPrDetails && subPrDetails.head && subPrDetails.head.ref) {
+                                            const branchToDelete = subPrDetails.head.ref;
+                                            logProgress(`Cleaning up: Deleting Copilot branch ${branchToDelete}...`);
+                                            await deleteBranch({ repoName: ticket.repoName, branchName: branchToDelete });
+                                        }
+                                    }
+                                } catch (cleanupErr) {
+                                    console.error('Cleanup failed:', cleanupErr.message);
+                                }
+                            }
+                        }
+                    }
                 }
             }
         } catch (error) {
