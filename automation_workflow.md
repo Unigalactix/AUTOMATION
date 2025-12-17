@@ -41,6 +41,21 @@ sequenceDiagram
     end
 ```
 
+## CLI Paths
+
+- **GitHub CLI (gh)**: C:\Program Files\GitHub CLI\gh.exe
+- **Git (git)**: C:\Program Files\Git\cmd\git.exe
+
+## Container Registry (ACR Only)
+
+- **Registry**: mvacrdemo.azurecr.io
+- **GitHub Secrets required**:
+  - `ACR_LOGIN_SERVER` = mvacrdemo.azurecr.io
+  - `ACR_USERNAME` = ACR admin or service principal appId
+  - `ACR_PASSWORD` = ACR password or service principal secret
+- **Tag format**: `${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:latest` and `:${{ github.sha }}`
+- The workflow computes `REPO_LOWER` from `${{ github.repository }}` to ensure lowercase tags.
+
 ## Generated Workflow Example
 
 For a Jira ticket specifying:

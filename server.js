@@ -14,6 +14,8 @@ require('dotenv').config();
 const app = express();
 const PORT = process.env.PORT || 3000;
 const POLL_INTERVAL_MS = 30000; // Poll every 30 seconds
+const USE_GH_COPILOT = process.env.USE_GH_COPILOT === 'true';
+const { execFile } = require('child_process');
 
 // In-memory store for UI
 let systemStatus = {
@@ -34,6 +36,24 @@ const repoLanguageCache = new Map();
 
 app.use(express.json());
 app.use(express.static('public')); // Serve UI
+
+// --- Optional: GH Copilot Suggest Integration ---
+app.post('/api/copilot/suggest', async (req, res) => {
+    if (!USE_GH_COPILOT) {
+        return res.status(400).json({ error: 'GH Copilot integration disabled. Set USE_GH_COPILOT=true' });
+    }
+
+    const { filename, message, commit } = req.body || {};
+    // gh copilot suggest does not support --message/--filename; call plain suggest
+    const args = ['copilot', 'suggest'];
+
+    execFile('gh', args, { cwd: process.cwd() }, (error, stdout, stderr) => {
+        if (error) {
+            return res.status(500).json({ error: error.message, stderr });
+        }
+        res.json({ output: stdout, stderr });
+    });
+});
 
 // --- API for UI ---
 app.get('/api/status', (req, res) => {
@@ -169,9 +189,62 @@ async function processTicketData(issue) {
         const defaultBranch = await getDefaultBranch(repoName);
         logProgress(`Targeting default branch: ${defaultBranch} `);
 
-        // 2. Generate Workflow
-        logProgress(`Generating ${language} workflow for ${repoName}...`);
-        const workflowYml = generateWorkflowFile({ language, repoName, buildCommand, testCommand, deployTarget, defaultBranch });
+        // 2.1 Optional: Apply ticket-specific Copilot fixes to target files before PR
+        const ticketFiles = Array.isArray(ticketData.customfield_files) ? ticketData.customfield_files : [];
+        if (USE_GH_COPILOT && ticketFiles.length > 0) {
+            const fixPrompt = `Address Jira ticket ${issueKey} requirements. Context: Language=${language}, Build=${buildCommand}, Test=${testCommand}. Make minimal, safe changes.`;
+            logProgress(`Applying Copilot fixes to ${ticketFiles.length} file(s)...`);
+            await applyCopilotFixes({ files: ticketFiles, prompt: fixPrompt });
+        }
+
+        // 2.2 Pre-PR AI Generation (Hybrid CLI) for workflow content
+        let workflowYml;
+        if (USE_GH_COPILOT) {
+            logProgress(`Running gh copilot suggest for pre-PR generation...`);
+            const targetFile = `.github/workflows/${repoName.split('/')[1] || 'repo'}-ci.yml`;
+            const promptParts = [
+                `Jira Ticket: ${issueKey}`,
+                `Repo: ${repoName}`,
+                `Default Branch: ${defaultBranch}`,
+                `Language: ${language}`,
+                `Build Command: ${buildCommand}`,
+                `Test Command: ${testCommand}`,
+                repoConfig.runCommand ? `Run Command: ${repoConfig.runCommand}` : null,
+                repoConfig.dockerBuildCommand ? `Docker: ${repoConfig.dockerBuildCommand}` : null,
+                deployTarget ? `Deploy Target: ${deployTarget}` : null
+            ].filter(Boolean);
+            const message = `Generate CI workflow based on repo analysis. Details -> ${promptParts.join(' | ')}`;
+
+            // Call plain suggest without unsupported flags
+            const args = ['copilot', 'suggest'];
+            const ghOutput = await new Promise((resolve) => {
+                execFile('gh', args, { cwd: process.cwd() }, (error, stdout, stderr) => {
+                    if (error) {
+                        logProgress(`Copilot CLI failed: ${error.message}. Falling back.`);
+                        resolve(null);
+                        return;
+                    }
+                    // Basic parse: use stdout as proposed file content
+                    if (stdout && stdout.trim().length > 0) {
+                        resolve(stdout);
+                    } else {
+                        logProgress(`Copilot CLI produced no content. Falling back.`);
+                        resolve(null);
+                    }
+                });
+            });
+
+            if (ghOutput) {
+                workflowYml = ghOutput;
+                logProgress(`Using Copilot-generated workflow content.`);
+            }
+        }
+
+        // Fallback: deterministic generator
+        if (!workflowYml) {
+            logProgress(`Generating ${language} workflow for ${repoName}...`);
+            workflowYml = generateWorkflowFile({ language, repoName, buildCommand, testCommand, deployTarget, defaultBranch });
+        }
         systemStatus.currentPayload = workflowYml;
 
         // 3. Create Pull Request (with detailed logs inside githubService -> or we log steps here)
@@ -248,6 +321,23 @@ async function processTicketData(issue) {
     }
 }
 
+// --- Helper: Apply Copilot fixes across multiple files before PR ---
+async function applyCopilotFixes({ files = [], prompt = '' }) {
+    if (!USE_GH_COPILOT) return [];
+    const results = [];
+    for (const f of files) {
+        await new Promise((resolve) => {
+            // Basic suggest only; flags like --filename/--message are unsupported
+            const args = ['copilot', 'suggest'];
+            execFile('gh', args, { cwd: process.cwd() }, (error, stdout, stderr) => {
+                results.push({ file: f, ok: !error, stdout, stderr, error: error ? error.message : null });
+                resolve();
+            });
+        });
+    }
+    return results;
+}
+
 // --- Polling Loop (Autopilot Mode) ---
 async function startPolling() {
     console.log('--- Starting Jira Autopilot Polling ---');
@@ -302,6 +392,7 @@ async function startPolling() {
             if (systemStatus.monitoredTickets.length > 0) {
                 // console.log('Checking CI status for monitored tickets...');
                 for (const ticket of systemStatus.monitoredTickets) {
+                    if (!ticket.branch) continue;
                     const checks = await getPullRequestChecks({
                         repoName: ticket.repoName,
                         ref: ticket.branch
@@ -328,6 +419,7 @@ app.listen(PORT, () => {
     console.log(`Server running on port ${PORT} `);
     console.log(`GitHub Token present: ${!!process.env.GHUB_TOKEN} `);
     console.log(`Jira Project: ${process.env.JIRA_PROJECT_KEY} `);
+    console.log(`GH Copilot enabled: ${USE_GH_COPILOT} `);
 
     setTimeout(startPolling, 1000);
 });

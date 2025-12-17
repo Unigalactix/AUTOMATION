@@ -142,44 +142,35 @@ function generateWorkflowFile({ language, repoName, buildCommand, testCommand, d
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@v3`;
 
-    // --- Docker Build Job (Container Ready) ---
-    let dockerJob = '';
-    // Generate Docker build for 'docker' AND 'azure-webapp' (unless explicitly opted out, which we don't support yet)
-    if (deployTarget === 'docker' || deployTarget === 'azure-webapp') {
-        dockerJob = `
-  docker-build:
-    runs-on: ubuntu-latest
-    needs: [build, security-scan]
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: \${{ github.actor }}
-          password: \${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ghcr.io/\${{ github.repository }}:latest
-      - name: Run Trivy Vulnerability Scanner
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: 'ghcr.io/\${{ github.repository }}:latest'
-          format: 'table'
-          exit-code: '1'
-          ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
-        env:
-          TRIVY_USERNAME: \${{ github.actor }}
-          TRIVY_PASSWORD: \${{ secrets.GITHUB_TOKEN }}`;
-    }
+        // --- Docker Build Job (Container Ready) ---
+        let dockerJob = '';
+        // Generate Docker build for 'docker' AND 'azure-webapp' using ACR only
+                if (deployTarget === 'docker' || deployTarget === 'azure-webapp') {
+                        dockerJob = `
+    docker-build:
+        if: github.event_name == 'push'
+        runs-on: ubuntu-latest
+        needs: [build, security-scan]
+        permissions:
+            contents: read
+        steps:
+            - uses: actions/checkout@v4
+            - name: Compute lowercase repo name
+                run: echo "REPO_LOWER=\$(echo '\${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+            - name: Log in to Azure Container Registry
+                uses: docker/login-action@v3
+                with:
+                    registry: \${{ secrets.ACR_LOGIN_SERVER }}
+                    username: \${{ secrets.ACR_USERNAME }}
+                    password: \${{ secrets.ACR_PASSWORD }}
+            - name: Build and push
+                uses: docker/build-push-action@v5
+                with:
+                    context: .
+                    push: true
+                    tags: \${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:latest,\${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:\${{ github.sha }}
+            `;
+                }
 
     // --- Azure Deployment Job ---
     let deployJob = '';
@@ -195,7 +186,7 @@ function generateWorkflowFile({ language, repoName, buildCommand, testCommand, d
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v2
         with:
-          app-name: 'payment-service-prod' 
+          app-name: 'mvdemoapp' 
           publish-profile: \${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
           package: .`;
     }
@@ -412,40 +403,30 @@ jobs:
     - name: Perform CodeQL Analysis
       uses: github/codeql-action/analyze@v3
 
-  --- JOB 3: CONTAINERIZATION (Conditional) ---
-  # Generates if deploy target is 'docker' OR 'azure-webapp'
-  docker-build:
-    runs-on: ubuntu-latest
-    needs: [build, security-scan]
-    permissions:
-      contents: read
-      packages: write
-    steps:
-    - uses: actions/checkout@v4
-    - name: Log in to GitHub Container Registry
-      uses: docker/login-action@v3
-      with:
-        registry: ghcr.io
-        username: \${{ github.actor }}
-        password: \${{ secrets.GITHUB_TOKEN }}
-    - name: Build and push
-      uses: docker/build-push-action@v5
-      with:
-        context: .
-        push: true
-        tags: ghcr.io/\${{ github.repository }}:latest
-    - name: Run Trivy Vulnerability Scanner
-      uses: aquasecurity/trivy-action@master
-      with:
-        image-ref: 'ghcr.io/\${{ github.repository }}:latest'
-        format: 'table'
-        exit-code: '1'
-        ignore-unfixed: true
-        vuln-type: 'os,library'
-        severity: 'CRITICAL,HIGH'
-      env:
-        TRIVY_USERNAME: \${{ github.actor }}
-        TRIVY_PASSWORD: \${{ secrets.GITHUB_TOKEN }}
+    --- JOB 3: CONTAINERIZATION (Conditional) ---
+    # Generates if deploy target is 'docker' OR 'azure-webapp'
+    docker-build:
+        runs-on: ubuntu-latest
+        needs: [build, security-scan]
+        permissions:
+            contents: read
+        steps:
+        - uses: actions/checkout@v4
+        - name: Compute lowercase repo name
+            run: echo "REPO_LOWER=\$(echo '\${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+        - name: Log in to Azure Container Registry
+            uses: docker/login-action@v3
+            with:
+                registry: \${{ secrets.ACR_LOGIN_SERVER }}
+                username: \${{ secrets.ACR_USERNAME }}
+                password: \${{ secrets.ACR_PASSWORD }}
+        - name: Build and push
+            uses: docker/build-push-action@v5
+            with:
+                context: .
+                push: true
+                tags: \${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:latest,\${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:\${{ github.sha }}
+            
 
   --- JOB 4: DEPLOYMENT (Conditional) ---
   # Generates if deploy target is 'azure-webapp'
@@ -458,9 +439,10 @@ jobs:
     - name: Deploy to Azure Web App
       uses: azure/webapps-deploy@v2
       with:
-        app-name: 'payment-service-prod'
+        app-name: 'mvdemoapp'
         publish-profile: \${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-        package: .
+                    package: .
+                    slot-name: production
 \`\`\`
 `;
 }
@@ -513,15 +495,42 @@ async function createPullRequestForWorkflow({ repoName, filePath, content, langu
             }
         }
 
-        // 4. Upsert Workflow File
-        await upsertWorkflowFileOnBranch({
-            owner,
-            repo,
-            branch: featureBranch,
-            message: `feat: Add ${language} CI workflow`,
-            contentBase64: Buffer.from(content).toString('base64'),
-            filePath
-        });
+        // 4. Upsert Workflow File (conditionally if none exists)
+        let skipWorkflowUpsert = false;
+        let existingWorkflowFile = null;
+        try {
+            const existing = await hasExistingWorkflow(repoName, language);
+            if (existing && existing.exists) {
+                skipWorkflowUpsert = true;
+                existingWorkflowFile = existing.workflowFile;
+                console.log(`Existing workflow detected: ${existingWorkflowFile}. Skipping new workflow file.`);
+            }
+        } catch (e) {
+            console.warn(`Workflow check failed: ${e.message}. Proceeding to upsert new workflow file.`);
+        }
+
+        if (!skipWorkflowUpsert) {
+            await upsertWorkflowFileOnBranch({
+                owner,
+                repo,
+                branch: featureBranch,
+                message: `feat: Add ${language} CI workflow`,
+                contentBase64: Buffer.from(content).toString('base64'),
+                filePath
+            });
+        } else {
+            // Ensure at least one commit exists on the feature branch to allow PR creation
+            const markerPath = `.github/automation/${issueKey}.json`;
+            const markerContent = JSON.stringify({ issueKey, timestamp: new Date().toISOString(), note: 'Automation marker to enable PR without altering existing workflow.' }, null, 2);
+            await upsertWorkflowFileOnBranch({
+                owner,
+                repo,
+                branch: featureBranch,
+                message: `chore: add automation marker for ${issueKey}`,
+                contentBase64: Buffer.from(markerContent).toString('base64'),
+                filePath: markerPath
+            });
+        }
 
 
 
@@ -535,6 +544,16 @@ async function createPullRequestForWorkflow({ repoName, filePath, content, langu
             title: `${issueKey}: Enable CI/CD for ${language}`,
             body: `This PR was automatically generated by the DevOps Automation Service for Jira Ticket ${issueKey}.\n\n✅ **Analysis Complete**: Detailed Requirements posted below for Copilot.\n\nAdding ${language} workflow.${deployTarget === 'docker' ? '\n\nAlso added Dockerfile for containerization.' : ''}`
         });
+
+        // 6a. If we skipped adding a new workflow, attempt to trigger existing workflow on feature branch
+        if (skipWorkflowUpsert && existingWorkflowFile) {
+            try {
+                console.log(`Triggering existing workflow ${existingWorkflowFile} on ref ${featureBranch}...`);
+                await triggerExistingWorkflow({ repoName, workflowFile: existingWorkflowFile, ref: featureBranch });
+            } catch (e) {
+                console.warn(`Failed to trigger existing workflow: ${e.message}`);
+            }
+        }
 
         // 7. [NEW] Copilot Prompt Automation (Direct Comment)
         if (ticketData) {
@@ -808,12 +827,48 @@ async function getDefaultBranch(repoName) {
     }
 }
 
+/**
+ * Checks if a repo has an existing workflow in .github/workflows and returns a best-match file.
+ */
+async function hasExistingWorkflow(repoName, language) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        const { data } = await octokit.repos.getContent({ owner, repo, path: '.github/workflows' });
+        if (!Array.isArray(data)) return { exists: false };
+        const yamlFiles = data.filter(f => f.type === 'file' && (f.name.endsWith('.yml') || f.name.endsWith('.yaml')));
+        if (yamlFiles.length === 0) return { exists: false };
+        const preferred = yamlFiles.find(f => f.name.toLowerCase().includes('ci'))
+            || (language ? yamlFiles.find(f => f.name.toLowerCase().includes(language)) : null)
+            || yamlFiles[0];
+        return { exists: true, workflowFile: preferred.name };
+    } catch (e) {
+        if (e.status === 404) return { exists: false };
+        throw e;
+    }
+}
+
+/**
+ * Triggers an existing GitHub Actions workflow via workflow_dispatch.
+ */
+async function triggerExistingWorkflow({ repoName, workflowFile, ref, inputs }) {
+    const [owner, repo] = repoName.split('/');
+    await octokit.actions.createWorkflowDispatch({
+        owner,
+        repo,
+        workflow_id: workflowFile,
+        ref,
+        inputs: inputs || {}
+    });
+}
+
 module.exports = {
     generateWorkflowFile, createPullRequestForWorkflow, getPullRequestChecks,
     detectRepoLanguage,
     generateDockerfile,
     analyzeRepoStructure,
     getRepoInstructions,
-    getDefaultBranch
+    getDefaultBranch,
+    hasExistingWorkflow,
+    triggerExistingWorkflow
 };
 

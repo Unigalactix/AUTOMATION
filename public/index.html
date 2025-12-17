@@ -536,6 +536,8 @@
                 }
                 if (item.prUrl) {
                     actionsHtml += `<a href="${item.prUrl}" target="_blank" class="btn btn-small btn-github" style="text-decoration:none;">PR</a>`;
+                    // Additional shortcut specifically for CI/CD columns: "PR by Copilot"
+                    actionsHtml += `<a href="${item.prUrl}" target="_blank" class="btn btn-small btn-github" aria-label="Open PR by Copilot" style="text-decoration:none;">Copilot PR</a>`;
                 }
                 // Payload Button for History
                 if (item.payload) {
