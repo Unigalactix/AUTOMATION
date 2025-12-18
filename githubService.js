@@ -353,11 +353,11 @@ function generateCopilotPrompt({ issueKey, summary, description, repoConfig, rep
     if (language === 'dotnet') CODEQL_LANGUAGE = 'csharp';
     if (language === 'java') CODEQL_LANGUAGE = 'java';
 
-    return `@copilot /fix **${issueKey}: ${summary}**
+    return `@copilot /fix This issue **${issueKey}: ${summary}**
 
 ${description || ''}
 
-Please generate a CI/CD pipeline file for this repo in the format below(ignore if already exists and working):
+& then please generate a CI/CD pipeline file for this repo in the format below(ignore if already exists and working):
 
 \`\`\`yaml
 name: CI Pipeline - ${REPO_NAME}
@@ -1020,6 +1020,23 @@ async function getPullRequestDetails({ repoName, pull_number }) {
 /**
  * Mark a draft Pull Request as Ready for Review using GitHub GraphQL API.
  */
+async function approvePullRequest({ repoName, pullNumber }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        await octokit.pulls.createReview({
+            owner,
+            repo,
+            pull_number: pullNumber,
+            event: 'APPROVE',
+            body: '✅ Auto-approved by Jira Autopilot.'
+        });
+        return { approved: true };
+    } catch (e) {
+        console.warn(`Failed to approve PR #${pullNumber}:`, e.message);
+        return { approved: false, message: e.message };
+    }
+}
+
 module.exports = {
     generateWorkflowFile,
     createPullRequestForWorkflow,
@@ -1038,6 +1055,7 @@ module.exports = {
     markPullRequestReadyForReview,
     mergePullRequest,
     enablePullRequestAutoMerge,
-    isPullRequestMerged
+    isPullRequestMerged,
+    approvePullRequest
 };
 
