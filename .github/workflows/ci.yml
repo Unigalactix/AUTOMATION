@@ -1,9 +1,10 @@
 name: CI Pipeline
 on:
+  workflow_dispatch:
   push:
-    branches: [ "main" ]
+    branches: [ "main", "version-3" ]
   pull_request:
-    branches: [ "main" ]
+    branches: [ "main", "version-3" ]
 env:
   CI: true
 jobs:
@@ -78,7 +79,7 @@ jobs:
       - name: Deploy to Azure Web App
         uses: azure/webapps-deploy@v2
         with:
-          app-name: 'mvdemoapp'
+          app-name: ${{ secrets.AZURE_WEBAPP_APP_NAME }}
           publish-profile: ${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
           package: .
-          slot-name: production
+          slot-name: ${{ secrets.AZURE_WEBAPP_SLOT_NAME }}
