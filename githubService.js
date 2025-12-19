@@ -144,69 +144,62 @@ function generateWorkflowFile({ language, repoName, buildCommand, testCommand, d
 
     // --- Docker Build Job (Container Ready) ---
     let dockerJob = '';
-    // Generate Docker build for 'docker' AND 'azure-webapp' (unless explicitly opted out, which we don't support yet)
+    // Generate Docker build for 'docker' AND 'azure-webapp' using ACR only
     if (deployTarget === 'docker' || deployTarget === 'azure-webapp') {
         dockerJob = `
-  docker-build:
-    runs-on: ubuntu-latest
-    needs: [build, security-scan]
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - uses: actions/checkout@v4
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: \${{ github.actor }}
-          password: \${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          push: true
-          tags: ghcr.io/\${{ github.repository }}:latest
-      - name: Run Trivy Vulnerability Scanner
-        uses: aquasecurity/trivy-action@master
-        with:
-          image-ref: 'ghcr.io/\${{ github.repository }}:latest'
-          format: 'table'
-          exit-code: '1'
-          ignore-unfixed: true
-          vuln-type: 'os,library'
-          severity: 'CRITICAL,HIGH'
-        env:
-          TRIVY_USERNAME: \${{ github.actor }}
-          TRIVY_PASSWORD: \${{ secrets.GITHUB_TOKEN }}`;
+    docker-build:
+        if: github.event_name == 'push'
+        runs-on: ubuntu-latest
+        needs: [build, security-scan]
+        permissions:
+            contents: read
+        steps:
+            - uses: actions/checkout@v4
+            - name: Compute lowercase repo name
+                run: echo "REPO_LOWER=\$(echo '\${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+            - name: Log in to Azure Container Registry
+                uses: docker/login-action@v3
+                with:
+                    registry: \${{ secrets.ACR_LOGIN_SERVER }}
+                    username: \${{ secrets.ACR_USERNAME }}
+                    password: \${{ secrets.ACR_PASSWORD }}
+            - name: Build and push
+                uses: docker/build-push-action@v5
+                with:
+                    context: .
+                    push: true
+                    tags: \${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:latest,\${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:\${{ github.sha }}
+            `;
     }
 
     // --- Azure Deployment Job ---
-    let deployJob = '';
-    if (deployTarget === 'azure-webapp') {
-        deployJob = `
-  deploy:
-    runs-on: ubuntu-latest
-    needs: [build, security-scan] # Can also depend on docker-build if we were deploying the container
-    environment: Production
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-      - name: Deploy to Azure Web App
-        uses: azure/webapps-deploy@v2
-        with:
-          app-name: 'payment-service-prod' 
-          publish-profile: \${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-          package: .`;
-    }
+        let deployJob = '';
+        if (deployTarget === 'azure-webapp') {
+                deployJob = `
+    deploy:
+        runs-on: ubuntu-latest
+        needs: [build, security-scan] # Can also depend on docker-build if we were deploying the container
+        environment: Production
+        steps:
+            - name: Checkout Repository
+                uses: actions/checkout@v4
+            - name: Deploy to Azure Web App
+                uses: azure/webapps-deploy@v2
+                with:
+                    app-name: \${{ secrets.AZURE_WEBAPP_APP_NAME }}
+                    publish-profile: \${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+                    package: .
+                    slot-name: \${{ secrets.AZURE_WEBAPP_SLOT_NAME }}`;
+        }
 
     const yamlContent = `
-name: CI Pipeline - ${repoName}
-on:
-    push:
-        branches: [ "${defaultBranch}" ]
-    pull_request:
-        branches: [ "${defaultBranch}" ]
+    name: CI Pipeline - ${repoName}
+    on:
+            workflow_dispatch:
+            push:
+                    branches: [ "${defaultBranch}" ]
+            pull_request:
+                    branches: [ "${defaultBranch}" ]
 env:
   CI: true
 jobs:
@@ -341,14 +334,125 @@ async function createWorkflowPR({ owner, repo, featureBranch, defaultBranch, tit
         title,
         body,
     });
+    console.log('PR created: ' + pr.html_url);
     return { pr, isNew: true };
 }
 
+/**
+ * Generates the Copilot Prompt (Comment Body).
+ */
+function generateCopilotPrompt({ issueKey, summary, description, repoConfig, repoName, defaultBranch, language }) {
+
+    // Map Dynamic Variables
+    const REPO_NAME = repoName;
+    const DEFAULT_BRANCH = defaultBranch;
+    const BUILD_COMMAND = repoConfig && repoConfig.buildCommand ? repoConfig.buildCommand : 'npm run build';
+    const TEST_COMMAND = repoConfig && repoConfig.testCommand ? repoConfig.testCommand : 'npm test';
+
+    // CodeQL Language Mapping
+    let CODEQL_LANGUAGE = 'javascript';
+    if (language === 'python') CODEQL_LANGUAGE = 'python';
+    if (language === 'dotnet') CODEQL_LANGUAGE = 'csharp';
+    if (language === 'java') CODEQL_LANGUAGE = 'java';
+
+    return `@copilot /fix This issue **${issueKey}: ${summary}**
+
+${description || ''}
+
+& then please generate a CI/CD pipeline file for this repo in the format below(ignore if already exists and working):
+
+\`\`\`yaml
+name: CI Pipeline - ${REPO_NAME}
+on:
+  push:
+    branches: [ "${DEFAULT_BRANCH}" ]
+  pull_request:
+    branches: [ "${DEFAULT_BRANCH}" ]
+env:
+  CI: true
+jobs:
+
+  --- JOB 1: BUILD & TEST ---
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+      # [DYNAMIC] Setup Logic based on Language Detected
+      # Language: ${language}
+      
+      # [DYNAMIC] Commands injected from Repo Analysis (package.json/pom.xml) or Defaults
+      - name: Build
+        run: ${BUILD_COMMAND}
+      - name: Test
+        run: ${TEST_COMMAND}
+
+  --- JOB 2: SECURITY SCANS ---
+  security-scan:
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      actions: read
+      contents: read
+    steps:
+    - uses: actions/checkout@v4
+    - name: Initialize CodeQL
+      uses: github/codeql-action/init@v3
+      with:
+        languages: ${CODEQL_LANGUAGE}
+    - name: Autobuild
+      uses: github/codeql-action/autobuild@v3
+    - name: Perform CodeQL Analysis
+      uses: github/codeql-action/analyze@v3
+
+    --- JOB 3: CONTAINERIZATION (Conditional) ---
+    # Generates if deploy target is 'docker' OR 'azure-webapp'
+    docker-build:
+        runs-on: ubuntu-latest
+        needs: [build, security-scan]
+        permissions:
+            contents: read
+        steps:
+        - uses: actions/checkout@v4
+        - name: Compute lowercase repo name
+            run: echo "REPO_LOWER=\$(echo '\${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+        - name: Log in to Azure Container Registry
+            uses: docker/login-action@v3
+            with:
+                registry: \${{ secrets.ACR_LOGIN_SERVER }}
+                username: \${{ secrets.ACR_USERNAME }}
+                password: \${{ secrets.ACR_PASSWORD }}
+        - name: Build and push
+            uses: docker/build-push-action@v5
+            with:
+                context: .
+                push: true
+                tags: \${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:latest,\${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:\${{ github.sha }}
+            
+
+  --- JOB 4: DEPLOYMENT (Conditional) ---
+  # Generates if deploy target is 'azure-webapp'
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [build, security-scan]
+    environment: Production
+    steps:
+    - uses: actions/checkout@v4
+    - name: Deploy to Azure Web App
+      uses: azure/webapps-deploy@v2
+      with:
+        app-name: 'democicd111'
+        publish-profile: \${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+                    package: .
+                    slot-name: production
+\`\`\`
+`;
+}
 
 /**
  * Orchestrates the PR Workflow.
  */
-async function createPullRequestForWorkflow({ repoName, filePath, content, language, issueKey, deployTarget, defaultBranch }) {
+async function createPullRequestForWorkflow({ repoName, filePath, content, language, issueKey, deployTarget, defaultBranch, repoConfig, ticketData }) {
     try {
         const [owner, repo] = repoName.split('/');
 
@@ -393,25 +497,87 @@ async function createPullRequestForWorkflow({ repoName, filePath, content, langu
             }
         }
 
-        // 4. Upsert File
-        await upsertWorkflowFileOnBranch({
-            owner,
-            repo,
-            branch: featureBranch,
-            message: `feat: Add ${language} CI workflow`,
-            contentBase64: Buffer.from(content).toString('base64'),
-            filePath
-        });
+        // 4. Upsert Workflow File (conditionally if none exists)
+        let skipWorkflowUpsert = false;
+        let existingWorkflowFile = null;
+        try {
+            const existing = await hasExistingWorkflow(repoName, language);
+            if (existing && existing.exists) {
+                skipWorkflowUpsert = true;
+                existingWorkflowFile = existing.workflowFile;
+                console.log(`Existing workflow detected: ${existingWorkflowFile}. Skipping new workflow file.`);
+            }
+        } catch (e) {
+            console.warn(`Workflow check failed: ${e.message}. Proceeding to upsert new workflow file.`);
+        }
 
-        // 5. Create PR
+        if (!skipWorkflowUpsert) {
+            await upsertWorkflowFileOnBranch({
+                owner,
+                repo,
+                branch: featureBranch,
+                message: `feat: Add ${language} CI workflow`,
+                contentBase64: Buffer.from(content).toString('base64'),
+                filePath
+            });
+        } else {
+            // Ensure at least one commit exists on the feature branch to allow PR creation
+            const markerPath = `.github/automation/${issueKey}.json`;
+            const markerContent = JSON.stringify({ issueKey, timestamp: new Date().toISOString(), note: 'Automation marker to enable PR without altering existing workflow.' }, null, 2);
+            await upsertWorkflowFileOnBranch({
+                owner,
+                repo,
+                branch: featureBranch,
+                message: `chore: add automation marker for ${issueKey}`,
+                contentBase64: Buffer.from(markerContent).toString('base64'),
+                filePath: markerPath
+            });
+        }
+
+
+
+
+        // 6. Create PR
         const { pr, isNew } = await createWorkflowPR({
             owner,
             repo,
             featureBranch,
             defaultBranch,
             title: `${issueKey}: Enable CI/CD for ${language}`,
-            body: `This PR was automatically generated by the DevOps Automation Service for Jira Ticket ${issueKey}.\n\nAdding ${language} workflow.${deployTarget === 'docker' ? '\n\nAlso added Dockerfile for containerization.' : ''}`
+            body: `This PR was automatically generated by the DevOps Automation Service for Jira Ticket ${issueKey}.\n\n✅ **Analysis Complete**: Detailed Requirements posted below for Copilot.\n\nAdding ${language} workflow.${deployTarget === 'docker' ? '\n\nAlso added Dockerfile for containerization.' : ''}`
         });
+
+        // 6a. If we skipped adding a new workflow, attempt to trigger existing workflow on feature branch
+        if (skipWorkflowUpsert && existingWorkflowFile) {
+            try {
+                console.log(`Triggering existing workflow ${existingWorkflowFile} on ref ${featureBranch}...`);
+                await triggerExistingWorkflow({ repoName, workflowFile: existingWorkflowFile, ref: featureBranch });
+            } catch (e) {
+                console.warn(`Failed to trigger existing workflow: ${e.message}`);
+            }
+        }
+
+        // 7. [NEW] Copilot Prompt Automation (Direct Comment)
+        if (ticketData) {
+            console.log('Generating Copilot Prompt for PR Comment...');
+            const promptBody = generateCopilotPrompt({
+                issueKey,
+                summary: ticketData.summary,
+                description: ticketData.description,
+                repoConfig,
+                repoName,
+                defaultBranch,
+                language
+            });
+
+            await octokit.issues.createComment({
+                owner,
+                repo,
+                issue_number: pr.number,
+                body: promptBody
+            });
+            console.log('Copilot Prompt posted to PR #' + pr.number);
+        }
 
         return { prUrl: pr.html_url, prNumber: pr.number, headSha: pr.head.sha, branch: featureBranch, isNew };
 
@@ -563,9 +729,9 @@ async function analyzeRepoStructure(repoName) {
                     else if (content.scripts.compile) result.buildCommand = 'npm run compile';
 
                     if (content.scripts.test) result.testCommand = 'npm test';
+                    if (content.scripts.start) result.runCommand = 'npm start';
                 }
                 console.log('Analyzed package.json:', result);
-                return result; // Return early if Node found
             } catch (e) {
                 console.error('Failed to parse package.json', e);
             }
@@ -574,44 +740,63 @@ async function analyzeRepoStructure(repoName) {
         // --- Java (Maven/Gradle) ---
         if (fileNames.includes('pom.xml')) {
             // Check for wrapper
-            const hasWrapper = await fileExists(owner, repo, 'mvnw'); // Helper needed or assumed check
+            const hasWrapper = await fileExists(owner, repo, 'mvnw');
             result.buildCommand = hasWrapper ? './mvnw clean package' : 'mvn clean package';
             result.testCommand = hasWrapper ? './mvnw test' : 'mvn test';
+            // Heuristic for Spring Boot run
+            result.runCommand = hasWrapper ? './mvnw spring-boot:run' : 'mvn spring-boot:run';
             console.log('Analyzed pom.xml (Maven):', result);
-            return result;
         }
-        if (fileNames.includes('build.gradle') || fileNames.includes('build.gradle.kts')) {
+        else if (fileNames.includes('build.gradle') || fileNames.includes('build.gradle.kts')) {
             const hasWrapper = await fileExists(owner, repo, 'gradlew');
             result.buildCommand = hasWrapper ? './gradlew build' : 'gradle build';
             result.testCommand = hasWrapper ? './gradlew test' : 'gradle test';
+            result.runCommand = hasWrapper ? './gradlew bootRun' : 'gradle bootRun';
             console.log('Analyzed build.gradle:', result);
-            return result;
         }
 
         // --- .NET (.sln / .csproj) ---
         const slnFile = fileNames.find(f => f.endsWith('.sln'));
+        const csprojFile = fileNames.find(f => f.endsWith('.csproj'));
+
         if (slnFile) {
             result.buildCommand = `dotnet build ${slnFile}`;
             result.testCommand = 'dotnet test';
+            result.runCommand = 'dotnet run';
             console.log(`Analyzed .sln (${slnFile}):`, result);
-            return result;
         }
-        const csprojFile = fileNames.find(f => f.endsWith('.csproj'));
-        if (csprojFile) {
+        else if (csprojFile) {
             result.buildCommand = `dotnet build ${csprojFile}`;
             result.testCommand = 'dotnet test';
+            result.runCommand = 'dotnet run';
             console.log(`Analyzed .csproj (${csprojFile}):`, result);
-            return result;
         }
 
-        // --- Python (requirements.txt) ---
-        if (fileNames.includes('requirements.txt')) {
-            // Simple inference
-            result.buildCommand = 'pip install -r requirements.txt';
+        // --- Python (requirements.txt / app.py) ---
+        // We check for python files even if requirements.txt is missing to detect run command
+        if (fileNames.includes('requirements.txt') || fileNames.some(f => f.endsWith('.py'))) {
+            // Build/Test defaults
+            if (fileNames.includes('requirements.txt')) {
+                result.buildCommand = 'pip install -r requirements.txt';
+            }
             result.testCommand = 'pytest';
-            // Could verify pytest existence by reading requirements.txt but keeping it fast for now
-            console.log('Analyzed requirements.txt:', result);
-            return result;
+
+            // Run Command Inference
+            if (fileNames.includes('manage.py')) {
+                result.runCommand = 'python manage.py runserver'; // Django
+            } else if (fileNames.includes('app.py')) {
+                result.runCommand = 'python app.py'; // Flask/Generic
+            } else if (fileNames.includes('main.py')) {
+                result.runCommand = 'python main.py'; // Generic
+            }
+
+            console.log('Analyzed Python structure:', result);
+        }
+
+        // --- Docker ---
+        if (fileNames.includes('Dockerfile')) {
+            result.dockerBuildCommand = 'docker build .';
+            console.log('Detected Dockerfile. Added dockerBuildCommand.');
         }
 
     } catch (error) {
@@ -644,12 +829,235 @@ async function getDefaultBranch(repoName) {
     }
 }
 
+/**
+ * Checks if a repo has an existing workflow in .github/workflows and returns a best-match file.
+ */
+async function hasExistingWorkflow(repoName, language) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        const { data } = await octokit.repos.getContent({ owner, repo, path: '.github/workflows' });
+        if (!Array.isArray(data)) return { exists: false };
+        const yamlFiles = data.filter(f => f.type === 'file' && (f.name.endsWith('.yml') || f.name.endsWith('.yaml')));
+        if (yamlFiles.length === 0) return { exists: false };
+        const preferred = yamlFiles.find(f => f.name.toLowerCase().includes('ci'))
+            || (language ? yamlFiles.find(f => f.name.toLowerCase().includes(language)) : null)
+            || yamlFiles[0];
+        return { exists: true, workflowFile: preferred.name };
+    } catch (e) {
+        if (e.status === 404) return { exists: false };
+        throw e;
+    }
+}
+
+/**
+ * Triggers an existing GitHub Actions workflow via workflow_dispatch.
+ */
+async function triggerExistingWorkflow({ repoName, workflowFile, ref, inputs }) {
+    const [owner, repo] = repoName.split('/');
+    await octokit.actions.createWorkflowDispatch({
+        owner,
+        repo,
+        workflow_id: workflowFile,
+        ref,
+        inputs: inputs || {}
+    });
+}
+
+/**
+ * Attempts to detect a Copilot-generated sub PR linked from comments on the main PR.
+ * Fallback: scan open PRs for likely Copilot PRs.
+ */
+async function findCopilotSubPR({ repoName, mainPrNumber }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        // 0. Get Main PR to know its "Head" (Feature Branch)
+        const { data: mainPr } = await octokit.pulls.get({ owner, repo, pull_number: mainPrNumber });
+        const featureBranch = mainPr.head.ref;
+
+        // 1. Scan PR comments for a PR URL (Explicit linking)
+        const { data: comments } = await octokit.issues.listComments({ owner, repo, issue_number: mainPrNumber });
+        const prUrlRegex = new RegExp(`https://github.com/${owner}/${repo}/pull/\\d+`, 'i');
+        for (const c of comments) {
+            const m = c.body && c.body.match(prUrlRegex);
+            if (m) {
+                const url = m[0];
+                const num = parseInt(url.split('/').pop(), 10);
+                const { data: pr } = await octokit.pulls.get({ owner, repo, pull_number: num });
+                // Verify it targets our branch
+                if (pr.base.ref === featureBranch) return pr;
+            }
+        }
+
+        // 2. Robust Fallback: List open PRs targeting the Feature Branch
+        const { data: openPRs } = await octokit.pulls.list({ owner, repo, state: 'open', base: featureBranch });
+
+        // Return the most recent one if multiple (unlikely)
+        if (openPRs.length > 0) {
+            console.log(`Found ${openPRs.length} PRs targeting ${featureBranch}. Using #${openPRs[0].number}`);
+            return openPRs[0];
+        }
+
+        // 3. Last Resort: Name/User match (if it targets something else? Unlikely useful)
+        // Kept for backward compat if base logic fails
+        const { data: allOpen } = await octokit.pulls.list({ owner, repo, state: 'open' });
+        const likely = allOpen.find(p =>
+            ((p.user && /copilot|github-actions/i.test(p.user.login || '')) ||
+                /copilot|automation|suggest/i.test(p.title || '')) &&
+            p.number !== mainPrNumber // Don't pick self
+        );
+        return likely || null;
+
+    } catch (e) {
+        console.warn('findCopilotSubPR failed:', e.message);
+        return null;
+    }
+}
+
+/**
+ * Merge the head branch of a sub PR into a base branch (feature branch of the main PR).
+ * Uses the GitHub merge endpoint to create a merge commit.
+ */
+async function mergeSubPRIntoBranch({ repoName, baseBranch, subPr }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        const headBranch = subPr.head.ref;
+        const commitMessage = `chore: merge Copilot PR #${subPr.number} (${headBranch}) into ${baseBranch}`;
+        await octokit.repos.merge({ owner, repo, base: baseBranch, head: headBranch, commit_message: commitMessage });
+        return { merged: true };
+    } catch (e) {
+        if (e.status === 409) {
+            // Merge conflict
+            return { merged: false, conflict: true, message: e.message };
+        }
+        console.warn('mergeSubPRIntoBranch failed:', e.message);
+        return { merged: false, message: e.message };
+    }
+}
+
+/**
+ * Delete a branch from the repository.
+ */
+async function deleteBranch({ repoName, branchName }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        await octokit.git.deleteRef({ owner, repo, ref: `heads/${branchName}` });
+        return { deleted: true };
+    } catch (e) {
+        console.warn(`Failed to delete branch ${branchName}:`, e.message);
+        return { deleted: false, error: e.message };
+    }
+}
+
+/**
+ * Marks a PR as Ready for Review (undraft).
+ */
+async function markPullRequestReadyForReview({ repoName, pullNumber }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        const { data: pr } = await octokit.pulls.get({ owner, repo, pull_number: pullNumber });
+        const nodeId = pr.node_id;
+        const mutation = `mutation($pullRequestId: ID!) {\n  markPullRequestReadyForReview(input: { pullRequestId: $pullRequestId }) {\n    pullRequest { id isDraft }\n  }\n}`;
+        const result = await octokit.graphql(mutation, { pullRequestId: nodeId });
+        return { ok: true, result };
+    } catch (e) {
+        console.warn('markPullRequestReadyForReview failed:', e.message);
+        return { ok: false, message: e.message };
+    }
+}
+
+/**
+ * Merges a Pull Request using the high-level API.
+ */
+async function mergePullRequest({ repoName, pullNumber, method = 'squash' }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        await octokit.pulls.merge({
+            owner,
+            repo,
+            pull_number: pullNumber,
+            merge_method: method
+        });
+        return { merged: true };
+    } catch (e) {
+        return { merged: false, message: e.message };
+    }
+}
+
+// Enable auto-merge for a PR via GraphQL
+async function enablePullRequestAutoMerge({ repoName, pullNumber, mergeMethod = 'SQUASH' }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        const { data: pr } = await octokit.pulls.get({ owner, repo, pull_number: pullNumber });
+        const nodeId = pr.node_id;
+        const mutation = `mutation($pullRequestId: ID!, $mergeMethod: PullRequestMergeMethod!) {\n  enablePullRequestAutoMerge(input: { pullRequestId: $pullRequestId, mergeMethod: $mergeMethod }) {\n    pullRequest { id number state }\n  }\n}`;
+        const result = await octokit.graphql(mutation, { pullRequestId: nodeId, mergeMethod });
+        return { ok: true, result };
+    } catch (e) {
+        console.warn('enablePullRequestAutoMerge failed:', e.message);
+        return { ok: false, message: e.message };
+    }
+}
+
+// Check if a PR is merged
+async function isPullRequestMerged({ repoName, pullNumber }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        await octokit.pulls.checkIfMerged({ owner, repo, pull_number: pullNumber });
+        return { merged: true };
+    } catch (e) {
+        // 404 if not merged
+        return { merged: false };
+    }
+}
+
+/**
+ * Get details for a PR by number.
+ */
+async function getPullRequestDetails({ repoName, pull_number }) {
+    const [owner, repo] = repoName.split('/');
+    const { data } = await octokit.pulls.get({ owner, repo, pull_number });
+    return data;
+}
+
+/**
+ * Mark a draft Pull Request as Ready for Review using GitHub GraphQL API.
+ */
+async function approvePullRequest({ repoName, pullNumber }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        await octokit.pulls.createReview({
+            owner,
+            repo,
+            pull_number: pullNumber,
+            event: 'APPROVE',
+            body: '✅ Auto-approved by Jira Autopilot.'
+        });
+        return { approved: true };
+    } catch (e) {
+        console.warn(`Failed to approve PR #${pullNumber}:`, e.message);
+        return { approved: false, message: e.message };
+    }
+}
+
 module.exports = {
-    generateWorkflowFile, createPullRequestForWorkflow, getPullRequestChecks,
+    generateWorkflowFile,
+    createPullRequestForWorkflow,
+    getPullRequestChecks,
     detectRepoLanguage,
     generateDockerfile,
     analyzeRepoStructure,
     getRepoInstructions,
-    getDefaultBranch
+    getDefaultBranch,
+    hasExistingWorkflow,
+    triggerExistingWorkflow,
+    findCopilotSubPR,
+    mergeSubPRIntoBranch,
+    getPullRequestDetails,
+    deleteBranch,
+    markPullRequestReadyForReview,
+    mergePullRequest,
+    enablePullRequestAutoMerge,
+    isPullRequestMerged,
+    approvePullRequest
 };
 

@@ -157,7 +157,7 @@ describe('githubService', () => {
             expect(yaml).toContain('languages: javascript');
         });
 
-        test('should include Trivy for docker', () => {
+        test('should include docker ACR build/push for docker', () => {
             const yaml = generateWorkflowFile({
                 language: 'python',
                 repoName: 'test/repo',
@@ -165,8 +165,9 @@ describe('githubService', () => {
                 testCommand: 'test',
                 deployTarget: 'docker'
             });
-            expect(yaml).toContain('aquasecurity/trivy-action@master');
-            expect(yaml).toContain('severity: \'CRITICAL,HIGH\'');
+            expect(yaml).toContain('docker-build:');
+            expect(yaml).toContain('docker/build-push-action@v5');
+            expect(yaml).toContain('secrets.ACR_LOGIN_SERVER');
         });
     });
 
@@ -182,7 +183,7 @@ describe('githubService', () => {
             expect(yaml).toContain('docker-build:');
             expect(yaml).toContain('docker/login-action@v3');
             expect(yaml).toContain('docker/build-push-action@v5');
-            expect(yaml).toContain('ghcr.io');
+            expect(yaml).toContain('secrets.ACR_LOGIN_SERVER');
         });
     });
 });

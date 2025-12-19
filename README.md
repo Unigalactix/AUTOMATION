@@ -12,14 +12,40 @@ A comprehensive Node.js automation service that bridges Jira and GitHub. It acts
     -   `pom.xml` / `build.gradle` → **Java**
 -   **Priority Queue**: Processes tickets based on Priority (Highest -> Lowest).
 -   **Stable PR Workflow**: Creates specific feature branches (`chore/{key}-workflow-setup`) and opens Pull Requests.
+-   **Persistent Logging**: Server activity is logged to `logs/server.log`.
 -   **Live Dashboard**: Real-time UI at `http://localhost:3000` showing:
     -   Active Queue & History
     -   **Live CI/CD Checks**: See the status of checks (e.g., "Build", "Tests") on the cards directly.
     -   Quick Links to Jira Tickets and GitHub PRs.
 -   **mcp-server**: Built-in Model Context Protocol server for AI Agents (Claude Desktop, etc.).
--   **Security**: Integrated CodeQL & Trivy scans.
+-   **Security**: Integrated CodeQL scans.
 -   **Dynamic Branching**: Automatically detects standard branches (`main`, `master`, `dev`).
 -   **Container Ready**: Generates `Dockerfile` for all Azure Web App deployments.
+
+## CLI Paths
+
+-   **GitHub CLI (gh)**: `C:\Program Files\GitHub CLI\gh.exe`
+-   **Git (git)**: `C:\Program Files\Git\cmd\git.exe`
+
+## Container Registry (ACR Only)
+
+-   **Registry**: `mvacrdemo.azurecr.io`
+-   **GitHub Secrets required**:
+    -   `ACR_LOGIN_SERVER` = `mvacrdemo.azurecr.io`
+    -   `ACR_USERNAME` = ACR admin or service principal appId
+    -   `ACR_PASSWORD` = ACR password or service principal secret
+-   **Tag format**: `${{ secrets.ACR_LOGIN_SERVER }}/${{ env.REPO_LOWER }}:latest` and `:${{ github.sha }}`
+-   The workflow computes `REPO_LOWER` from `${{ github.repository }}` to ensure lowercase tags.
+
+## Azure Web App Deploy Secrets
+
+For publish-profile zip deploy to Azure Web Apps, ensure the target repository has these GitHub Actions secrets configured:
+
+- `AZURE_WEBAPP_APP_NAME`: The Web App name (e.g., `myapp-web`)
+- `AZURE_WEBAPP_SLOT_NAME`: The deployment slot (e.g., `production`)
+- `AZURE_WEBAPP_PUBLISH_PROFILE`: The full publish profile XML content
+
+These are referenced by the generated workflow in the `deploy` job using `azure/webapps-deploy@v2`.
 
 ## Prerequisites
 
@@ -81,9 +107,8 @@ The generated pipelines include built-in security checks. Here is where to find 
     *   **In PR**: Look for "Code scanning results" checks at the bottom of the Pull Request.
     *   **Dashboard**: Go to your Repo > **Security** tab > **Code scanning**.
 
-2.  **Trivy (Docker Images)**:
-    *   **In Logs**: Go to the **Actions** tab > Click the workflow run > `docker-build` job.
-    *   **Output**: The logs will show a table listing any defects (e.g., `CVE-2023-XXXX`).
+2.  **Container Scanning**:
+    *   Trivy has been removed per current policy; can be re-enabled later.
 
 ## AI Integration (MCP) 🤖
 This project includes an **MCP Server** (`mcpServer.js`).
@@ -103,7 +128,7 @@ Add this to your Claude Desktop config to give your AI access to the agent's too
 
 ## Architecture
 
-See [automation_workflow.md](./automation_workflow.md) for a detailed sequence diagram.
+See [agents.md](./agents.md) for detailed agent specifications and workflow diagrams.
 
 ## License
 

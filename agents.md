@@ -1,52 +1,122 @@
-# Agents
+# Agents & Architecture Reference
 
-This repository contains and defines the following autonomous agents and interfaces.
+This document serves as the technical specification for the Autonomous Agents and Interfaces in this system.
 
 ## 1. Jira Autopilot Agent
-**Type**: Autonomous Service (Loop)
 **Runtime**: Node.js (`server.js`)
 **Role**: DevOps Engineer
+**Loop Interval**: 30 Seconds
 
-### Profile
-The **Jira Autopilot** is a fully autonomous agent designed to sit between your Project Management tool (Jira) and your Codebase (GitHub). It acts as a specialized DevOps engineer that picks up tasks and executes them without human intervention.
+### Core Workflow
+The agent operates on a continuous feedback loop:
+1.  **Poll**: Fetches tickets from Jira with `statusCategory="To Do"`.
+2.  **Prioritize**: Sorts tickets by Priority (Highest → Lowest).
+3.  **Process**: Picks the top ticket and moves it to **"In Progress"**.
+4.  **Execute**: Performs Repo Analysis, Artifact Generation, and PR Creation.
+5.  **Report**:
+    -   **Success**: Comments with PR Link → Transitions to **"Done"**.
+    -   **Failure**: Comments with Error Log → Transitions to **"To Do"**.
 
-### Capabilities
-| Skill | Description |
-| :--- | :--- |
-| **Monitoring** | Polls Jira every 30s for high-priority tickets in the "To Do" column. |
-| **Context Awareness** | "Reads" the target repository to detect the tech stack (Node.js, Python, .NET). |
-| **Construction** | Authoring of Infrastructure-as-Code files: <br> - CI/CD Workflows (`.github/workflows/*.yml`) <br> - Container Definitions (`Dockerfile`) |
-| **Deployment** | Manages Git lifecycle: Branching, Committing, and Opening Pull Requests. |
-| **reporting** | Transitions Jira tickets and posts comments with results (Success/Failure). |
+### Integration Specifications
+
+#### Jira Field Mapping
+The agent looks for these fields (smart-mapped from `customfield_` or standard fields):
+-   `repo` / `repoName`: Target GitHub Repository (e.g., `Unigalactix/sample-node-project`).
+-   `language`: Project tech stack (`node`, `python`, `dotnet`, `java`).
+-   `build`: Custom build command (e.g., `npm run build:prod`).
+-   `test`: Custom test command.
+-   `deploy`: Deployment target (`azure-webapp`, `docker`).
+
+#### Context Awareness (Discovery Priority)
+The agent determines how to build/test a project using this strict precedence order:
+1.  **Jira Ticket**: Explicit fields override everything.
+2.  **Instructions File**: Regex parsing of `.github/instructions.md`, `.github/agents.md`, or `README.md`.
+    -   *Pattern*: `Build Command: "..."`
+3.  **Deep Code Analysis**: Scanning specific files:
+    -   `package.json` (Scripts: `build`, `test`, `start`)
+    -   `pom.xml` / `build.gradle` (Maven/Gradle wrappers)
+    -   `*.sln` / `*.csproj` (.NET)
+    -   `requirements.txt` / `manage.py` (Python)
+4.  **Language Defaults**: Fallback commands (e.g., `npm run build`).
+
+### Construction & Deployment
+-   **Branching Strategy**: Creates a stable feature branch named `chore/{issue-key}-workflow-setup`.
+-   **Containerization**: Automatically generates and commits a `Dockerfile` if `deploy=azure-webapp` or `docker`.
+-   **Pull Request Generation**:
+    -   **Title**: `{ISSUE_KEY}: Enable CI/CD for {LANG}`
+    -   **Body**: Auto-generated description including an **embedded Copilot Prompt** (`@copilot /fix ...`) to request further refinements.
+-   **Secrets Management**:
+    -   `ACR_LOGIN_SERVER`, `ACR_USERNAME`, `ACR_PASSWORD` (For Docker builds).
+    -   `AZURE_WEBAPP_PUBLISH_PROFILE` (For Web App deployment).
 
 ---
 
 ## 2. Model Context Protocol (MCP) Interface
-**Type**: Agent Tool Provider
 **Runtime**: Node.js (`mcpServer.js`)
-**Role**: Interface Layer
+**Role**: AI Interoperability Layer
 
-### Profile
-This component allows **External AI Agents** (like Claude Desktop or IDE Assistants) to "plug in" to the Automation Service. It exposes the service's internal state and logic as callable tools.
+This server exposes the internal tools of the automation service to external AI agents (like Claude Desktop).
 
-### Exposed Tools
--   `generate_workflow_yaml`: Ask the agent to draft a CI/CD pipeline for a specific stack.
--   `check_pr_status`: Ask the agent to report the live result of a specific Pull Request.
+### Exposed Tools & Resources
+
+#### `autopilot://status` (Resource)
+Returns a live JSON snapshot of the system state:
+-   Active Queue
+-   Processing Phase
+-   Recent Scan History
+
+#### `generate_workflow_yaml` (Tool)
+**Description**: Generates a GitHub Actions CI pipeline YAML for a specific language.
+**Parameters**:
+-   `language`: `node` | `python` | `dotnet`
+-   `repoName`: String
+-   `buildCommand`: String (Optional)
+-   `testCommand`: String (Optional)
+-   `deployTarget`: String (Optional)
+
+#### `check_pr_status` (Tool)
+**Description**: Checks the live CI/CD status (Check Runs) of a specific PR or Branch.
+**Parameters**:
+-   `repoName`: String
+-   `ref`: Branch name or Commit SHA
 -   `autopilot://status`: A resource URI to read the live JSON state of the system queue.
+-   `add_jira_comment`: Helper tool to post manual comments to tickets.
 
 ---
 
-## Agent Workflow
+## Agent Workflow Diagram
+
 ```mermaid
-flowchart LR
-    Jira(Jira Ticket) -->|Poll| Autopilot[Autopilot Agent]
-    Autopilot -->|Read| Repo{Repo Analysis}
-    Repo -->|Gen| Dockerfile
-    Repo -->|Gen| CI_YAML
-    Dockerfile & CI_YAML -->|PR| GitHub
-    GitHub -->|Status| Autopilot
-    Autopilot -->|Update| Jira
-    
-    External[External AI] <-->|MCP| Interface[MCP Server]
-    Interface -.->|Access| Autopilot
+flowchart TD
+    subgraph Jira_World
+        Ticket(New Ticket)
+        Updates[Status Updates]
+        Done(Done State)
+    end
+
+    subgraph Autopilot_Engine [Node.js Agent - 30s Loop]
+        Poll[Poll 'To Do']
+        Analyze{Context Analysis}
+        Gen[Generate Content]
+        Monitor[Monitor CI/CD]
+    end
+
+    subgraph GitHub_World
+        Repo(Target Repo)
+        Branch[feature/chore-...]
+        PR[Pull Request]
+        SubPR[Copilot Sub-PR]
+        Action[GitHub Actions]
+    end
+
+    Ticket --> Poll
+    Poll --> Analyze
+    Analyze -- 1. Read Files --> Repo
+    Analyze -- 2. Detect Strategy --> Gen
+    Gen -- 3. Commit & Open PR --> Branch
+    Branch --> PR
+    PR -- 4. Report Created --> Updates
+    PR --> Monitor
+    SubPR -- 5. Merge & Comment --> Monitor
+    Monitor -- 6. Success & Deploy --> Done
 ```

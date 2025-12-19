@@ -90,7 +90,16 @@ async function transitionIssue(issueKey, targetStatusName) {
         const transitionsData = await jiraRequest(`/rest/api/3/issue/${issueKey}/transitions`);
         const transitions = transitionsData.transitions || [];
 
-        const transition = transitions.find(t => t.name.toLowerCase() === targetStatusName.toLowerCase());
+        const aliases = {
+            'To Do': ['To Do', 'Open', 'Backlog', 'New', 'Reopen'],
+            'In Progress': ['In Progress', 'In Dev', 'Active'],
+            'Done': ['Done', 'Closed', 'Resolved']
+        };
+        const targetAliases = aliases[targetStatusName] || [targetStatusName];
+
+        const transition = transitions.find(t =>
+            targetAliases.some(alias => t.name.toLowerCase() === alias.toLowerCase())
+        );
 
         if (!transition) {
             console.warn(`Transition "${targetStatusName}" not found for issue ${issueKey}.`);
