@@ -359,8 +359,8 @@ function generateCopilotPrompt({ issueKey, summary, description, repoConfig, rep
 
 ${description || ''}
 
-& then please generate a CI/CD pipeline file for this repo in the format below(ignore if already exists and working):
-
+Read the whole repository first
+& then please generate a CI/CD pipeline file based on this repo using the format below(ignore if already exists and working):
 \`\`\`yaml
 name: CI Pipeline - ${REPO_NAME}
 on:
