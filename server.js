@@ -88,6 +88,68 @@ app.get('/api/status', (req, res) => {
     res.json(systemStatus);
 });
 
+// Manual Poll Trigger
+app.post('/api/poll', (req, res) => {
+    console.log('[API] Check triggering manual poll...');
+    // We can't easily call the internal 'poll' function because it's inside startPolling closure.
+    // However, we can toggle a flag or just restart the process? 
+    // Actually, let's just expose a global emitter or a simpler way?
+    // For now, let's just log it. Real implementation would require refactoring startPolling.
+    // WAIT! We can move 'poll' to outer scope or attach it to app.
+    if (global.forcePoll) {
+        global.forcePoll();
+        res.json({ message: 'Poll triggered' });
+    } else {
+        res.status(503).json({ message: 'Poll function not ready' });
+    }
+});
+
+// --- On-Demand MCP Inspector ---
+app.post('/api/inspector', (req, res) => {
+    console.log('[API] Launching MCP Inspector on demand...');
+    try {
+        const { spawn } = require('child_process');
+
+        // Use npx.cmd on windows, npx on linux/mac
+        const npmCmd = process.platform === 'win32' ? 'npx.cmd' : 'npx';
+        const nodeExe = process.execPath;
+        const serverPath = require('path').join(__dirname, 'mcpServer.js');
+
+        // Note: shell:false is safer if we don't need shell features. 
+        // npx.cmd is an executable (batch) so it runs fine.
+        // We pass arguments as array.
+        // We do NOT use 'inherit' for stdio because we want to capture it or just let it run detached?
+        // Actually, if we want the user to see the URL in server console, inherit is good.
+        // But npx will open the browser automatically, so the user sees the UI.
+
+        const inspector = spawn(npmCmd, ['-y', '@modelcontextprotocol/inspector', nodeExe, serverPath], {
+            cwd: __dirname,
+            shell: false, // Try false to avoid quoting hell, npx.cmd should handle it
+            stdio: 'inherit',
+            env: { ...process.env } // Don't force PORT, let it find a free one and open browser
+        });
+
+        inspector.on('error', (err) => {
+            console.error('[MCP] Failed to launch inspector:', err);
+        });
+
+        res.json({ message: 'Inspector launched. Check your browser.' });
+    } catch (e) {
+        console.error('[MCP] Error triggering inspector:', e);
+        res.status(500).json({ error: e.message });
+    }
+});
+
+// Start Server & Polling
+app.listen(PORT, () => {
+    console.log(`Server running on port ${PORT} `);
+    console.log(`GitHub Token present: ${!!process.env.GHUB_TOKEN} `);
+    console.log(`Jira Project: ${process.env.JIRA_PROJECT_KEY} `);
+    console.log(`GH Copilot enabled: ${USE_GH_COPILOT} `);
+
+    setTimeout(startPolling, 1000);
+});
+
 // --- Helper: Log Progress ---
 function logProgress(message) {
     const timestamp = new Date().toLocaleTimeString();
@@ -626,6 +688,12 @@ async function startPolling() {
         } finally {
             setTimeout(monitorChecks, 10000); // Check every 10s
         }
+    };
+
+    // Expose for API
+    global.forcePoll = () => {
+        console.log('[Autopilot] Force polling triggered via API.');
+        poll();
     };
 
     poll();

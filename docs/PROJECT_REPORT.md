@@ -85,8 +85,10 @@ We have built a visual **Dashboard** that runs in your web browser.
 While the logic is simple, the technology is robust.
 
 *   **Server (`server.js`)**: The "Brain" running in Node.js that coordinates everything.
+    *   **Intelligence**: Can optionally use `gh copilot` CLI to generate code fixes and custom CI workflows.
 *   **GitHub Service (`githubService.js`)**: The "Librarian" that knows how to speak to GitHub's complex API.
 *   **Jira Service (`jiraService.js`)**: The "Messenger" that translates code updates into business updates on Jira.
+    *   **Dynamic Discovery**: Automatically fetches available projects via API, removing the need for manual configuration.
 *   **MCP Server (`mcpServer.js`)**: The "API Layer" that allows other AIs to securely control this system.
 
 ### Glossary
@@ -94,3 +96,62 @@ While the logic is simple, the technology is robust.
 *   **Merge**: The act of combining new code into the main codebase.
 *   **Deploy**: Putting the specific code onto a server where users can see it.
 *   **MCP (Model Context Protocol)**: A standard way for AI models to talk to external tools and data.
+
+### System Architecture & Execution Flow
+
+This diagram illustrates how the different scripts in the `AUTOMATION` folder interact.
+
+```mermaid
+graph TD
+    %% Define Styles
+    classDef core fill:#ffeb3b,stroke:#fbc02d,stroke-width:2px,color:#000;
+    classDef service fill:#4fc3f7,stroke:#0277bd,stroke-width:2px,color:#000;
+    classDef manual fill:#e0e0e0,stroke:#9e9e9e,stroke-width:2px,color:#000;
+    classDef ai fill:#ba68c8,stroke:#7b1fa2,stroke-width:2px,color:#fff;
+    classDef external fill:#fff,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5;
+
+    %% Nodes
+    Server["🧠 server.js<br/>(The Engine)"]
+    JiraSvc["👀 jiraService.js<br/>(The Eyes)"]
+    GithubSvc["🖐️ githubService.js<br/>(The Hands)"]
+    MCPServer["🤖 mcpServer.js<br/>(The Sidecar)"]
+    Utils["🛠️ utils/check_boards.js<br/>(Manual Tool)"]
+    
+    %% External Nodes
+    Copilot["✨ GitHub Copilot CLI<br/>(Optional Intelligence)"]
+    JiraAPI[("Jira API")]
+    GithubAPI[("GitHub API")]
+    AIClient[("Clause/IDE<br/>AI Client")]
+
+    %% Classes
+    class Server core;
+    class JiraSvc,GithubSvc service;
+    class Utils,MCPServer manual;
+    class Copilot ai;
+
+    %% Relationships - Main Loop
+    Server -->|"1. Polls (30s Loop)"| JiraSvc
+    JiraSvc <-->|"Fetch Tickets / Projects"| JiraAPI
+    JiraSvc -->|"Return Tickets"| Server
+    
+    %% Relationships - Execution
+    Server -.->|"2. Write Code (If Enabled)"| Copilot
+    Copilot -.->|"Return Code/YAML"| Server
+    
+    Server -->|"3. Create PR / Check Status"| GithubSvc
+    GithubSvc <-->|"Git Operations"| GithubAPI
+    
+    %% Relationships - Feedback
+    GithubSvc -->|"Status Update"| Server
+    Server -->|"4. Update Ticket"| JiraSvc
+
+    %% Standalone / Manual
+    Utils -.->|"Manually Run"| JiraAPI
+    AIClient <-->|"stdio communication"| MCPServer
+    MCPServer -.->|"Calls Functions"| GithubSvc
+    MCPServer -.->|"Calls Functions"| JiraSvc
+    
+    %% Comments
+    note1[Running continuously<br/>via 'node server.js']
+    note1 -.- Server
+```

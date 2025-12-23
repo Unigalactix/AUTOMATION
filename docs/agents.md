@@ -9,7 +9,7 @@ This document serves as the technical specification for the Autonomous Agents an
 
 ### Core Workflow
 The agent operates on a continuous feedback loop:
-1.  **Poll**: Fetches tickets from Jira with `statusCategory="To Do"`.
+1.  **Poll**: Fetches tickets from Jira (Dynamically discovered projects).
 2.  **Prioritize**: Sorts tickets by Priority (Highest → Lowest).
 3.  **Process**: Picks the top ticket and moves it to **"In Progress"**.
 4.  **Execute**: Performs Repo Analysis, Artifact Generation, and PR Creation.
