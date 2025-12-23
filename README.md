@@ -2,6 +2,14 @@
 
 A comprehensive Node.js automation service that bridges Jira and GitHub. It acts as an autonomous agent that polls Jira for tickets, intelligently detects project requirements (Language, Repo), and generates remote CI/CD workflows via GitHub Pull Requests.
 
+![alt text](image.png)
+
+## Prerequisites
+
+-   **Node.js** (v18 or higher)
+-   **Jira Account** (Cloud) with an API Token.
+-   **GitHub Account** with a Personal Access Token (Classic) having `repo`, `workflow`, and `read:user` scopes.
+
 ## Features ✨
 
 -   **Autopilot Polling**: Automatically polls Jira every 30 seconds for new tickets.
