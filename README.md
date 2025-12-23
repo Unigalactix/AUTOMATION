@@ -211,3 +211,26 @@ graph TD
 ## License
 
 MIT
+
+## Configuration: Per-board Post-PR Status
+
+You can configure a per-board (project) status that the service will transition Jira tickets to after a PR is created or verified. The precedence is:
+
+- `config/board_post_pr_status.json` mapping (project key or project name)
+- `POST_PR_STATUS` environment variable
+- default: `In Progress`
+
+Create `config/board_post_pr_status.json` with a JSON object mapping project keys (e.g. `NDE`) or project names to the desired status. Example:
+
+```
+{
+    "NDE": "In Review",
+    "MKT": "In Development",
+    "OPS": "In Progress"
+}
+```
+
+Notes:
+- The service will only transition a ticket to `Done` when deployment is detected by the CI checks.
+- If no mapping is found for a project, the `POST_PR_STATUS` env var will be used; otherwise `In Progress` is used.
+

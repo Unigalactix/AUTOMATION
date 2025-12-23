@@ -24,6 +24,31 @@ const {
 const { getPendingTickets, transitionIssue, addComment } = require('./jiraService');
 require('dotenv').config();
 
+// Load optional per-board POST_PR_STATUS mapping
+const BOARD_POST_PR_STATUS_PATH = path.join(__dirname, 'config', 'board_post_pr_status.json');
+let boardPostPrStatus = {};
+try {
+    if (fs.existsSync(BOARD_POST_PR_STATUS_PATH)) {
+        boardPostPrStatus = JSON.parse(fs.readFileSync(BOARD_POST_PR_STATUS_PATH, 'utf8'));
+        console.log('[Config] Loaded board_post_pr_status.json');
+    }
+} catch (e) {
+    console.warn('[Config] Failed to load board_post_pr_status.json:', e.message);
+    boardPostPrStatus = {};
+}
+
+function getPostPrStatusForIssue(issue) {
+    const projectKey = issue && issue.key ? issue.key.split('-')[0] : null;
+    const projectName = issue?.fields?.project?.name;
+    const keys = [projectKey, projectName].filter(Boolean);
+    for (const k of keys) {
+        if (boardPostPrStatus && Object.prototype.hasOwnProperty.call(boardPostPrStatus, k)) {
+            return boardPostPrStatus[k];
+        }
+    }
+    return process.env.POST_PR_STATUS || 'In Progress';
+}
+
 const app = express();
 const PORT = process.env.PORT || 3000;
 const POLL_INTERVAL_MS = 30000; // Poll every 30 seconds
@@ -429,19 +454,22 @@ async function processTicketData(issue) {
         if (result.isNew) {
             logProgress(`PR Created Successfully: ${result.prUrl} `);
 
-            // 4. Comment Success & Move to Done
+            // 4. Comment Success & Move to configured post-PR status (per-board override)
             if (issueKey) {
+                const postPrStatus = getPostPrStatusForIssue(issue);
                 logProgress(`Posting Success comment to Jira...`);
                 await addComment(issueKey, `SUCCESS: Workflow PR created! \nLink: ${result.prUrl} `);
-                await transitionIssue(issueKey, 'Done');
-                logProgress(`Ticket moved to "Done".`);
+                await transitionIssue(issueKey, postPrStatus);
+                logProgress(`Ticket moved to "${postPrStatus}".`);
             }
         } else {
             logProgress(`PR already exists: ${result.prUrl} `);
             if (issueKey) {
-                logProgress(`Updates verified.Moving to Done.`);
+                const postPrStatus = getPostPrStatusForIssue(issue);
+                logProgress(`Updates verified. Moving to configured post-PR status.`);
                 await addComment(issueKey, `VERIFIED: Workflow PR already exists.\nLink: ${result.prUrl} `);
-                await transitionIssue(issueKey, 'Done');
+                await transitionIssue(issueKey, postPrStatus);
+                logProgress(`Ticket moved to "${postPrStatus}".`);
             }
         }
 
@@ -651,6 +679,14 @@ async function startPolling() {
                             // Hardcoded app name for now as per plan
                             const appUrl = 'https://mvdemoapp.azurewebsites.net';
                             await addComment(ticket.key, `🚀 **Deployment Successful!**\n\nThe application is live at: [${appUrl}](${appUrl})\n\n[View Deployment Logs](${deployCheck.url})`);
+
+                            // Transition ticket to Done now that deployment is confirmed
+                            try {
+                                await transitionIssue(ticket.key, 'Done');
+                                logProgress(`Ticket ${ticket.key} transitioned to "Done" after deployment.`);
+                            } catch (e) {
+                                console.warn(`Failed to transition ${ticket.key} to Done: ${e.message}`);
+                            }
 
                             // Cleanup: Delete Copilot Branch if it was merged
                             if (ticket.copilotMerged && ticket.copilotPrUrl) {
