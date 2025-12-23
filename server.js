@@ -140,24 +140,7 @@ app.post('/api/inspector', (req, res) => {
     }
 });
 
-// Start Server & Polling
-app.listen(PORT, () => {
-    console.log(`Server running on port ${PORT} `);
-    console.log(`GitHub Token present: ${!!process.env.GHUB_TOKEN} `);
-    console.log(`Jira Project: ${process.env.JIRA_PROJECT_KEY} `);
-    console.log(`GH Copilot enabled: ${USE_GH_COPILOT} `);
 
-    setTimeout(startPolling, 1000);
-});
-
-// --- Helper: Log Progress ---
-function logProgress(message) {
-    const timestamp = new Date().toLocaleTimeString();
-    const logEntry = `[${timestamp}] ${message} `;
-    console.log(logEntry);
-    systemStatus.currentTicketLogs.push(logEntry);
-    writeLog(message);
-}
 
 // --- Core Logic ---
 async function processTicketData(issue) {
