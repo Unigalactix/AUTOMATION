@@ -1,11 +1,11 @@
-# How to Integrate Jira Autopilot MCP with VS Code AI Agents
+# Integrate Jira Autopilot MCP with GitHub Copilot (VS Code)
 
-This guide explains how to connect your running **Jira Autopilot MCP Server** to AI coding assistants in VS Code, such as **Cline** (formerly Claude Dev) or **Roo Code**.
+This guide explains how to connect the running **Jira Autopilot MCP Server** to **GitHub Copilot Chat** in VS Code via the Model Context Protocol (MCP).
 
-Once connected, your AI agent can:
--   **Read Jira Tickets**: "What is the acceptance criteria for NDE-123?"
--   **Check Status**: "Is the build failing for the current PR?"
--   **Trigger Actions**: "Force a poll now" or "Undraft this PR."
+Once connected, Copilot can:
+- **Read Jira Tickets**: "What is the acceptance criteria for NDE-123?"
+- **Check Status**: "Is the build failing for the current PR?"
+- **Trigger Actions**: "Force a poll now" or "Undraft this PR."
 
 ## Prerequisites
 1.  **Node.js** installed.
@@ -14,54 +14,73 @@ Once connected, your AI agent can:
 
 ---
 
-## Configuration Steps
+## Configuration
 
 ### 1. Locate your Absolute Path
 You need the full path to the `mcpServer.js` file.
 *   **Windows Example**: `C:\Users\RajeshKodaganti(Quad\Downloads\GITHUB\AUTOMATION\mcpServer.js`
 *   **Mac/Linux Example**: `/Users/username/github/automation/mcpServer.js`
 
-### 2. Configure Cline / Roo Code
-1.  Open the **Cline** extension in VS Code sidebar.
-2.  Click the **Settings (Gear Icon)**.
-3.  Scroll down to **"MCP Servers"** section.
-4.  Add a new server configuration:
+### 2. Add MCP Server to GitHub Copilot Chat
+
+Use either the Settings UI or settings JSON. Both approaches are equivalent.
+
+- Settings UI (recommended):
+  1. Open VS Code Settings (Ctrl+,).
+  2. Search for "Copilot MCP" or "MCP Servers" under GitHub Copilot Chat.
+  3. Add a new MCP server:
+     - Name: `jira-autopilot`
+     - Command: `node`
+     - Args: `C:\\Users\\RajeshKodaganti(Quad\\Downloads\\GITHUB\\AUTOMATION\\mcpServer.js`
+     - Env → `PATH`: `C:\\Program Files\\nodejs;${env:PATH}`
+     - Disabled: `false`
+     - Always Allow: `[]`
+
+- Settings JSON (advanced): add an MCP servers block that Copilot Chat reads. Example:
 
 ```json
 {
-  "jira-autopilot": {
-    "command": "node",
-    "args": [
-      "C:\\Users\\RajeshKodaganti(Quad\\Downloads\\GITHUB\\AUTOMATION\\mcpServer.js"
-    ],
-    "env": {
-      "PATH": "C:\\Program Files\\nodejs;${env:PATH}" 
-    },
-    "disabled": false,
-    "alwaysAllow": []
+  "mcpServers": {
+    "jira-autopilot": {
+      "command": "node",
+      "args": [
+        "C:\\Users\\RajeshKodaganti(Quad\\Downloads\\GITHUB\\AUTOMATION\\mcpServer.js"
+      ],
+      "env": {
+        "PATH": "C:\\Program Files\\nodejs;${env:PATH}"
+      },
+      "disabled": false,
+      "alwaysAllow": []
+    }
   }
 }
 ```
 
-> **Note on Windows Paths**: You must use **double backslashes** (`\\`) in the JSON config.
+> Windows note: In JSON, use double backslashes (`\\`) in paths.
 
-### 3. Restart the Agent
-1.  Close and reopen the Cline panel, or reload VS Code window.
-2.  Cline should show a green indicator next to "MCP Servers".
+### 3. Reload and Verify
+1. Reload the VS Code window to let Copilot pick up the new MCP server.
+2. Open Copilot Chat. You should see MCP tools available and the server start without errors.
 
 ---
 
 ## Usage Examples
 
-Once connected, simply ask Cline in the chat:
+Once connected, simply ask Copilot Chat:
 
-*   **"Check the status of Jira ticket NDE-123."** -> (Calls `get_jira_details`)
-*   **"Why is the server reporting an error? Check the logs."** -> (Calls `read_server_logs`)
-*   **"I just added a ticket. Trigger a poll."** -> (Calls `trigger_manual_poll`)
-*   **"What projects are you monitoring?"** -> (Calls `list_active_repos`)
+* **"Check the status of Jira ticket NDE-123."** → uses `get_jira_details`
+* **"Why is the server reporting an error? Check the logs."** → uses `read_server_logs`
+* **"I just added a ticket. Trigger a poll."** → uses `trigger_manual_poll`
+* **"What projects are you monitoring?"** → uses `list_active_repos`
 
 ## Troubleshooting
 
-*   **Connection Failed**: Ensure `node` is in your system PATH, or specify the full path to `node.exe` in the "command" field (e.g., `C:\\Program Files\\nodejs\\node.exe`).
-*   **Dependencies Missing**: Make sure you ran `npm install` in the AUTOMATION folder.
-*   **Process Error**: Check if another instance is blocking port 3000 (though MCP uses stdio, it might try to fetch status from localhost:3000).
+* **Connection failed**: Ensure `node` is in PATH, or use the full path (e.g., `C:\\Program Files\\nodejs\\node.exe`).
+* **Dependencies missing**: In the repo root, run `npm install`. This project requires `@modelcontextprotocol/sdk` and `zod` (already declared in package.json).
+* **Module not found (@modelcontextprotocol/sdk)**: Re-run `npm install`. If npm is flaky, try `npx -y npm@latest install`.
+* **Server can’t reach API**: Some tools call `http://localhost:3000/api`. If you use those tools, run the main service (`npm start`) so the API is available.
+* **Manual test (optional)**: Inspect with MCP Inspector:
+
+  ```powershell
+  npx @modelcontextprotocol/inspector node mcpServer.js
+  ```

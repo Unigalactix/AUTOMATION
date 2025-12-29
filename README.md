@@ -219,6 +219,7 @@ graph TD
     Comment --> MoveDone
 ```
 
+
 ## Configuration: Per-board Post-PR Status
 
 You can configure a per-board (project) status that the service will transition Jira tickets to after a PR is created or verified. The precedence is:
@@ -244,3 +245,4 @@ Notes:
 ## License
 
 MIT
+
