@@ -69,44 +69,49 @@ ENTRYPOINT ["java", "-jar", "app.jar"]`;
  */
 function generateWorkflowFile({ language, repoName, buildCommand, testCommand, deployTarget, defaultBranch = 'main' }) {
 
+    // Safe defaults to avoid invalid YAML when commands are missing
+    buildCommand = buildCommand || 'npm run build';
+    testCommand = testCommand || 'npm test';
+
         // Language-specific setup steps
-        const languageSteps = {
-                'node': `      - name: Set up Node.js
-                uses: actions/setup-node@v4
-                with:
-                    node-version: '20'
-            - name: Install dependencies
-                run: npm ci
-            - name: Running NPM Audit
-                run: |
-                    if [ -f "package-lock.json" ]; then
-                        echo "Using npm for dependency checks"
-                        npm audit --production --json || true
-                    fi`,
+                const languageSteps = {
+                                'node': `            - name: Set up Node.js
+                            uses: actions/setup-node@v4
+                            with:
+                                node-version: '20'
+                        - name: Install dependencies
+                            run: npm ci
+                        - name: Running NPM Audit
+                            shell: bash
+                            run: |
+                                if [ -f "package-lock.json" ]; then
+                                    echo "Using npm for dependency checks"
+                                    npm audit --production --json || true
+                                fi`,
 
-                'python': `      - name: Set up Python
-                uses: actions/setup-python@v4
-                with:
-                    python-version: '3.10'
-            - name: Install dependencies
-                run: pip install -r requirements.txt`,
+                                'python': `            - name: Set up Python
+                            uses: actions/setup-python@v4
+                            with:
+                                python-version: '3.10'
+                        - name: Install dependencies
+                            run: pip install -r requirements.txt`,
 
-                'dotnet': `      - name: Set up .NET
-                uses: actions/setup-dotnet@v4
-                with:
-                    dotnet-version: '8.0.x'
-            - name: Restore dependencies
-                run: dotnet restore`,
+                                'dotnet': `            - name: Set up .NET
+                            uses: actions/setup-dotnet@v4
+                            with:
+                                dotnet-version: '8.0.x'
+                        - name: Restore dependencies
+                            run: dotnet restore`,
 
-                'java': `      - name: Set up JDK 17
-                uses: actions/setup-java@v4
-                with:
-                    java-version: '17'
-                    distribution: 'temurin'
-                    cache: maven
-            - name: Build with Maven
-                run: ./mvnw clean package`
-        };
+                                'java': `            - name: Set up JDK 17
+                            uses: actions/setup-java@v4
+                            with:
+                                java-version: '17'
+                                distribution: 'temurin'
+                                cache: maven
+                        - name: Build with Maven
+                            run: ./mvnw clean package`
+                };
 
         // Default to node if language not found
         const setupSteps = languageSteps[language] || languageSteps['node'];
@@ -196,11 +201,11 @@ function generateWorkflowFile({ language, repoName, buildCommand, testCommand, d
                     fi
             - name: Validate package structure
                 run: |
-                    if [ ! -f "${{ env.PACKAGE_DIR }}/index.html" ]; then
-                        echo "index.html not found in ${{ env.PACKAGE_DIR }}"; exit 1;
+                    if [ ! -f "\${{ env.PACKAGE_DIR }}/index.html" ]; then
+                        echo "index.html not found in \${{ env.PACKAGE_DIR }}"; exit 1;
                     fi
-                    echo "Package directory: ${{ env.PACKAGE_DIR }}"
-                    ls -la "${{ env.PACKAGE_DIR }}"
+                    echo "Package directory: \${{ env.PACKAGE_DIR }}"
+                    ls -la "\${{ env.PACKAGE_DIR }}"
             - name: Deploy to Azure Web App
                 uses: azure/webapps-deploy@v2
                 with:
@@ -487,10 +492,10 @@ jobs:
     Additional Guidance for Static Website (HTML/CSS/JS):
 
     1. Only deploy necessary files: index.html, *.html, *.css, *.js, and asset folders (assets/, static/, images/, fonts/).
-    2. Prefer deploying the `public/` folder if present; otherwise create a `deploy/` folder with only static site files.
-    3. Validate that `${{ env.PACKAGE_DIR }}/index.html` exists before deploy; fail fast if missing.
-    4. Use `package: ${{ env.PACKAGE_DIR }}` in the deploy step to avoid uploading `.github/`, `node_modules/`, etc.
-    5. Optionally add `.zipignore` to exclude non-site content if packaging repository root (not recommended here).
+    2. Prefer deploying the public/ folder if present; otherwise create a deploy/ folder with only static site files.
+    3. Validate that \${{ env.PACKAGE_DIR }}/index.html exists before deploy; fail fast if missing.
+    4. Use package: \${{ env.PACKAGE_DIR }} in the deploy step to avoid uploading .github/, node_modules/, etc.
+    5. Optionally add .zipignore to exclude non-site content if packaging repository root (not recommended here).
 
     This ensures Azure Web App Zip Deploy receives a minimal, correct package for static sites and reduces deployment failures.
 `;
