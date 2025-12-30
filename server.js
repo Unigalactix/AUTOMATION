@@ -19,9 +19,10 @@ const {
     mergePullRequest,
     enablePullRequestAutoMerge,
     isPullRequestMerged,
-    approvePullRequest
+    approvePullRequest,
+    getActiveOrgPRsWithJiraKeys
 } = require('./githubService');
-const { getPendingTickets, transitionIssue, addComment } = require('./jiraService');
+const { getPendingTickets, transitionIssue, addComment, getIssueDetails } = require('./jiraService');
 require('dotenv').config();
 
 // Load optional per-board POST_PR_STATUS mapping
@@ -562,6 +563,68 @@ async function applyCopilotFixes({ files = [], prompt = '' }) {
 async function startPolling() {
     console.log('--- Starting Jira Autopilot Polling ---');
 
+    // On startup, reconcile open PRs across the org and resume monitoring
+    async function reconcileActivePRsOnStartup() {
+        try {
+            const org = process.env.GHUB_ORG || 'Unigalactix';
+            console.log(`[Autopilot] Reconciling active PRs in org: ${org}`);
+            const prs = await getActiveOrgPRsWithJiraKeys({ org });
+            if (!Array.isArray(prs) || prs.length === 0) {
+                console.log('[Autopilot] No open PRs with Jira keys found to reconcile.');
+                return;
+            }
+            for (const pr of prs) {
+                const issueKey = pr.jiraKey;
+                try {
+                    const issue = await getIssueDetails(issueKey);
+                    const statusName = issue?.fields?.status?.name || '';
+                    const priority = issue?.fields?.priority?.name || 'Medium';
+                    const isActive = /in progress|processing|in review|active/i.test(statusName) && !/done|closed|resolved/i.test(statusName);
+                    if (!isActive) {
+                        continue;
+                    }
+                    // Avoid duplicates
+                    const already = systemStatus.monitoredTickets.find(t => t.key === issueKey || t.prUrl === pr.prUrl);
+                    if (already) continue;
+
+                    const historyItem = {
+                        key: issueKey,
+                        priority,
+                        result: 'Resumed',
+                        time: new Date().toLocaleTimeString(),
+                        jiraUrl: `${process.env.JIRA_BASE_URL}/browse/${issueKey}`,
+                        prUrl: pr.prUrl,
+                        repoName: pr.repoName,
+                        branch: pr.branch,
+                        payload: null,
+                        language: null,
+                        deployTarget: null,
+                        checks: [],
+                        headSha: pr.headSha,
+                        copilotPrUrl: null,
+                        copilotMerged: false,
+                        copilotCreatedAt: null,
+                        copilotMergedAt: null,
+                        toolUsed: 'Reconcile',
+                        prReadyCommented: false,
+                        prMergedCommented: false,
+                        failureCommentPosted: false
+                    };
+                    systemStatus.scanHistory.unshift(historyItem);
+                    systemStatus.monitoredTickets.push(historyItem);
+                    console.log(`[Autopilot] Resumed monitoring PR ${pr.prUrl} for ticket ${issueKey}.`);
+                    try {
+                        await addComment(issueKey, `🔁 Server restarted: resuming monitoring for active PR\nPR: ${pr.prUrl}`);
+                    } catch (_) {}
+                } catch (e) {
+                    console.warn(`[Autopilot] Failed to reconcile ${issueKey}: ${e.message}`);
+                }
+            }
+        } catch (e) {
+            console.error('[Autopilot] Reconciliation error:', e.message);
+        }
+    }
+
     const poll = async () => {
         try {
             // PHASE: Scanning
@@ -788,6 +851,8 @@ async function startPolling() {
     };
 
     poll();
+    // Kick off reconciliation before starting monitor loop
+    await reconcileActivePRsOnStartup();
     monitorChecks();
 }
 
