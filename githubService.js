@@ -1183,6 +1183,73 @@ function summarizeFailureFromRun({ run, jobs }) {
     return lines.join('\n');
 }
 
+// --- Org-level PR discovery & Jira key mapping ---
+
+// Extract a Jira key like ABC-123 from text
+function extractJiraKeyFromText(text) {
+    if (!text) return null;
+    const match = String(text).match(/([A-Z][A-Z0-9]+-\d+)/);
+    return match ? match[1] : null;
+}
+
+// List open PRs across an organization using the Search API
+async function listOpenOrgPullRequests({ org, perPage = 50, page = 1 }) {
+    const { data } = await octokit.search.issuesAndPullRequests({
+        q: `org:${org} is:pr is:open`,
+        per_page: perPage,
+        page
+    });
+    return data.items.map(item => {
+        const repoFullName = item.repository_url && item.repository_url.includes('/repos/')
+            ? item.repository_url.split('/repos/')[1]
+            : null;
+        return {
+            repoFullName,
+            number: item.number,
+            title: item.title,
+            html_url: item.html_url
+        };
+    });
+}
+
+// Get full PR details (including head SHA and branch) for a repo PR number
+async function getPullRequestDetailsByRepo({ repoFullName, number }) {
+    const [owner, repo] = repoFullName.split('/');
+    const { data } = await octokit.pulls.get({ owner, repo, pull_number: number });
+    return data;
+}
+
+// Get open org PRs with inferred Jira keys and head sha for reconciliation
+async function getActiveOrgPRsWithJiraKeys({ org, maxPages = 4 }) {
+    const results = [];
+    for (let page = 1; page <= maxPages; page++) {
+        const items = await listOpenOrgPullRequests({ org, page });
+        if (!items.length) break;
+        for (const item of items) {
+            if (!item.repoFullName) continue;
+            try {
+                const pr = await getPullRequestDetailsByRepo({ repoFullName: item.repoFullName, number: item.number });
+                const keyFromTitle = extractJiraKeyFromText(pr.title);
+                const keyFromBody = extractJiraKeyFromText(pr.body);
+                const keyFromBranch = extractJiraKeyFromText(pr.head && pr.head.ref);
+                const jiraKey = keyFromTitle || keyFromBody || keyFromBranch;
+                results.push({
+                    repoName: item.repoFullName,
+                    prNumber: pr.number,
+                    prUrl: pr.html_url,
+                    branch: pr.head && pr.head.ref,
+                    headSha: pr.head && pr.head.sha,
+                    jiraKey
+                });
+            } catch (e) {
+                console.warn('Failed to fetch PR details for', item.repoFullName, item.number, e.message);
+            }
+        }
+    }
+    // Filter to those we could infer a Jira key for
+    return results.filter(r => !!r.jiraKey);
+}
+
 module.exports = {
     generateWorkflowFile,
     createPullRequestForWorkflow,
@@ -1207,5 +1274,8 @@ module.exports = {
     getJobsForRun,
     summarizeFailureFromRun
     , getLatestDeploymentUrl
+    , extractJiraKeyFromText
+    , listOpenOrgPullRequests
+    , getActiveOrgPRsWithJiraKeys
 };
 
