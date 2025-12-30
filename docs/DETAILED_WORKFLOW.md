@@ -144,8 +144,8 @@ graph TD
     *   **Requirement Parsing**: Extracts key requirements from the Jira ticket description.
 3.  **Validation**: Ensures the ticket has necessary metadata (Repo URL, etc.). If missing, it logs a warning and skips processing to prevent crashing.
 
-### Phase 2: Execution & Code Generation (Copilot)
-1.  **AI Orchestration via Copilot (Optional)**: If `USE_GH_COPILOT=true`, the system constructs a prompt containing the ticket requirements and feeds it to the GitHub Copilot CLI.
+### Phase 2: Execution & Code Generation (GitHub Copilot)
+1.  **AI Orchestration via GitHub Copilot (Optional)**: If `USE_GH_COPILOT=true`, the system constructs a prompt containing the ticket requirements and feeds it to the GitHub Copilot CLI.
     *   **Failure Mode**: If GitHub Copilot Service is down or times out, the system gracefully degrades to using a standard CI/CD template ("Fallback Mode") to ensure a basic pipeline is still created.
 2.  **Git Operations**:
     *   Creates a standardized branch name: `chore/{ticket-key}-workflow-setup`.
