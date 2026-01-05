@@ -1,60 +1,81 @@
-# Workflow Flow Diagram
+# CI/CD Automation Flow (Visio-style)
 
-This diagram illustrates the complete workflow process for the Jira Autopilot system, from ticket creation to deployment.
+Below is a high-level flow diagram (Mermaid) showing how the system moves from Jira tickets → Pull Requests → GitHub Actions → Azure → Jira updates, including monitoring and reconciliation on server restarts.
 
 ```mermaid
-graph TD
-    %% Define Styles
-    classDef jira fill:#2684FF,stroke:#0052CC,stroke-width:2px,color:#fff;
-    classDef auto fill:#FFD700,stroke:#B8860B,stroke-width:2px,color:#000;
-    classDef gh fill:#24292e,stroke:#000,stroke-width:2px,color:#fff;
-    classDef process fill:#4CAF50,stroke:#2E7D32,stroke-width:2px,color:#fff;
-    
-    %% Workflow Steps
-    S1[Create Jira Ticket]
-    S2[Autopilot Polls Jira]
-    S3[Analyze Ticket Requirements]
-    S4[Detect Project Language]
-    S5[Generate CI/CD Workflow]
-    S6["Upsert Files: Workflow and Dockerfile"]
-    S7[Create Feature Branch]
-    S8[Open Pull Request]
-    S9[Run CI/CD Checks]
-    S10[Review and Merge]
-    S11[Deploy to Target]
-    S12[Update Jira Ticket Status]
-    
-    %% Flow Connections
-    S1 --> S2
-    S2 --> S3
-    S3 --> S4
-    S4 --> S5
-    S5 --> S6
-    S6 --> S7
-    S7 --> S8
-    S8 --> S9
-    S9 --> S10
-    S10 --> S11
-    S11 --> S12
-    
-    %% Apply Styles
-    class S1,S12 jira
-    class S2,S3 auto
-    class S4,S5,S6 process
-    class S7,S8,S9,S10,S11 gh
+flowchart TD
+  %% Swimlanes via subgraphs
+  subgraph JIRA[Jira Cloud]
+    J1[Ticket in To Do]
+    J2[Transition to In Progress]
+    J3[Post PR created]
+    J4[Post Ready for Review]
+    J5[Post Deployment Success/Failure]
+    J6[Transition to Done / To Do]
+  end
+
+  subgraph SERVER[Automation Server]
+    S0[Startup]
+    S1[Poll Jira for To Do]
+    S2[Process Ticket Data]
+    S3[Analyze Repo & Detect Language]
+    S4[Generate Workflow YAML]
+    S5[Ensure Feature Branch]
+    S6[Upsert Files (Workflow / Dockerfile)]
+    S7[Create or Reuse PR]
+    S8[Comment PR with Copilot Prompt]
+    S9[Monitor Runs & Jobs]
+    S10[Summarize Failures + Hints]
+    S11[Reconcile Active PRs on Restart]
+  end
+
+  subgraph GITHUB[GitHub]
+    G1[PR Open]
+    G2[PR Updates]
+    G3[Deployment created with environment_url]
+  end
+
+  subgraph ACTIONS[GitHub Actions]
+    A1[Build & Test]
+    A2[Security Scan (CodeQL)]
+    A3{Container Build?}
+    A4[Docker Build & Push]
+    A5{Deploy to Azure?}
+    A6[Prepare Static Package]
+    A7[Validate index.html]
+    A8[Deploy to Azure Web App]
+    A9[Publish Deployment URL]
+  end
+
+  subgraph AZURE[Azure Web App]
+    Z1[App/Slot Updated]
+    Z2[Live URL]
+  end
+
+  %% Main happy path
+  J1 -->|Autopilot poll| S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> G1
+  S2 -->|Transition| J2
+  S7 -->|Comment PR| S8 --> G2
+  G1 -->|Triggers| A1 --> A2 --> A3
+  A3 -- yes --> A4 --> A5
+  A3 -- no --> A5
+  A5 -- yes --> A6 --> A7 --> A8 --> Z1 --> Z2 --> A9 --> G3 --> S9
+  A5 -- no --> S9
+
+  %% Monitoring and outcomes
+  S9 -->|Success| J5 --> J6
+  S9 -->|Failure| S10 --> J5 --> J6
+
+  %% Reconciliation on restart
+  S0 --> S11 -->|Org PRs + Jira keys| S9
 ```
 
-## Workflow Steps Explained
+Key Notes
+- Build/Test defaults when missing: `npm run build` / `npm test`.
+- Static-site deploys package only `public/` or a minimal `deploy/` folder; validates `index.html`.
+- Deployment URL published via GitHub Deployments and included in Jira comments.
+- On restart, the server reconciles open org PRs → seeds monitoring for tickets in active statuses.
 
-1. **Create Jira Ticket**: User creates a new ticket in Jira with requirements
-2. **Autopilot Polls Jira**: System automatically polls Jira every 30 seconds
-3. **Analyze Ticket Requirements**: Extracts repository, language, and deployment info
-4. **Detect Project Language**: Identifies tech stack (Node.js, .NET, Python, Java)
-5. **Generate CI/CD Workflow**: Creates GitHub Actions workflow file
-6. **Upsert Files: Workflow and Dockerfile**: Updates or creates workflow files and Dockerfile
-7. **Create Feature Branch**: Creates a feature branch for the changes
-8. **Open Pull Request**: Opens a PR with the generated files
-9. **Run CI/CD Checks**: Executes automated tests and builds
-10. **Review and Merge**: Reviews PR and merges if checks pass
-11. **Deploy to Target**: Deploys application to Azure or container registry
-12. **Update Jira Ticket Status**: Marks ticket as complete in Jira
+How to View
+- GitHub renders Mermaid diagrams natively in Markdown.
+- In VS Code: open docs/workflow-flow.md and use “Open Preview”.

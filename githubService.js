@@ -7,15 +7,15 @@ const octokit = new Octokit({
 });
 
 /**
-/**
  * Generates a default Dockerfile content based on language.
  */
-function generateDockerfile(language) {
+function generateDockerfile(language, opts = {}) {
     if (language === 'node') {
         return `FROM node:20-alpine
 WORKDIR /app
+ENV NODE_ENV=production
 COPY package*.json ./
-RUN npm ci --only=production
+RUN npm ci --omit=dev
 COPY . .
 EXPOSE 3000
 CMD ["npm", "start"]`;
@@ -24,7 +24,7 @@ CMD ["npm", "start"]`;
         return `FROM python:3.9-slim
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 COPY . .
 CMD ["python", "app.py"]`;
     }
@@ -42,10 +42,11 @@ COPY --from=build /app/publish .
 ENTRYPOINT ["dotnet", "App.dll"]`;
     }
     if (language === 'java') {
+        const useWrapper = opts.hasMavenWrapper ? './mvnw' : 'mvn';
         return `FROM eclipse-temurin:17-jdk-alpine AS build
 WORKDIR /app
 COPY . .
-RUN ./mvnw clean package -DskipTests
+RUN ${useWrapper} clean package -DskipTests
 
 FROM eclipse-temurin:17-jre-alpine
 WORKDIR /app
@@ -68,86 +69,83 @@ ENTRYPOINT ["java", "-jar", "app.jar"]`;
  */
 function generateWorkflowFile({ language, repoName, buildCommand, testCommand, deployTarget, defaultBranch = 'main' }) {
 
-    // Language-specific setup steps
-    const languageSteps = {
-        'node': `
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-      - name: Install dependencies
-        run: npm ci
-      - name: Running NPM Audit
-        run: |
-          if [ -f "package-lock.json" ]; then
-            echo "Using npm for dependency checks"
-            npm install
-            npm audit --production --json || true
-          fi`,
+    // Safe defaults to avoid invalid YAML when commands are missing
+    buildCommand = buildCommand || 'npm run build';
+    testCommand = testCommand || 'npm test';
 
-        'python': `
-      - name: Set up Python
-        uses: actions/setup-python@v4
-        with:
-          python-version: '3.10'
-      - name: Install dependencies
-        run: pip install -r requirements.txt`,
+        // Language-specific setup steps
+                const languageSteps = {
+                                'node': `            - name: Set up Node.js
+                            uses: actions/setup-node@v4
+                            with:
+                                node-version: '20'
+                        - name: Install dependencies
+                            run: npm ci
+                        - name: Running NPM Audit
+                            shell: bash
+                            run: |
+                                if [ -f "package-lock.json" ]; then
+                                    echo "Using npm for dependency checks"
+                                    npm audit --production --json || true
+                                fi`,
 
-        'dotnet': `
-      - name: Set up .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: '8.0.x'
-      - name: Restore dependencies
-        run: dotnet restore`,
+                                'python': `            - name: Set up Python
+                            uses: actions/setup-python@v4
+                            with:
+                                python-version: '3.10'
+                        - name: Install dependencies
+                            run: pip install -r requirements.txt`,
 
-        'java': `
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-          cache: maven
-      - name: Build with Maven
-        run: ./mvnw clean package`
-    };
+                                'dotnet': `            - name: Set up .NET
+                            uses: actions/setup-dotnet@v4
+                            with:
+                                dotnet-version: '8.0.x'
+                        - name: Restore dependencies
+                            run: dotnet restore`,
 
-    // Default to node if language not found
-    const setupSteps = languageSteps[language] || languageSteps['node'];
+                                'java': `            - name: Set up JDK 17
+                            uses: actions/setup-java@v4
+                            with:
+                                java-version: '17'
+                                distribution: 'temurin'
+                                cache: maven
+                        - name: Build with Maven
+                            run: ./mvnw clean package`
+                };
 
-    // --- Security Job (CodeQL) ---
-    const codeqlMap = {
-        'node': 'javascript',
-        'python': 'python',
-        'dotnet': 'csharp',
-        'java': 'java'
-    };
-    const codeqlLang = codeqlMap[language] || 'javascript';
+        // Default to node if language not found
+        const setupSteps = languageSteps[language] || languageSteps['node'];
 
-    const securityJob = `
-  security-scan:
-    runs-on: ubuntu-latest
-    permissions:
-      security-events: write
-      actions: read
-      contents: read
-    steps:
-      - uses: actions/checkout@v4
-      - name: Initialize CodeQL
-        uses: github/codeql-action/init@v3
-        with:
-          languages: ${codeqlLang}
-      - name: Autobuild
-        uses: github/codeql-action/autobuild@v3
-      - name: Perform CodeQL Analysis
-        uses: github/codeql-action/analyze@v3`;
+        // --- Security Job (CodeQL) ---
+        const codeqlMap = {
+                'node': 'javascript',
+                'python': 'python',
+                'dotnet': 'csharp',
+                'java': 'java'
+        };
+        const codeqlLang = codeqlMap[language] || 'javascript';
 
-    // --- Docker Build Job (Container Ready) ---
-    let dockerJob = '';
-    // Generate Docker build for 'docker' AND 'azure-webapp' using ACR only
-    if (deployTarget === 'docker' || deployTarget === 'azure-webapp') {
-        dockerJob = `
-    docker-build:
+        const securityJob = `  security-scan:
+        runs-on: ubuntu-latest
+        permissions:
+            security-events: write
+            actions: read
+            contents: read
+        steps:
+            - uses: actions/checkout@v4
+            - name: Initialize CodeQL
+                uses: github/codeql-action/init@v3
+                with:
+                    languages: ${codeqlLang}
+            - name: Autobuild
+                uses: github/codeql-action/autobuild@v3
+            - name: Perform CodeQL Analysis
+                uses: github/codeql-action/analyze@v3`;
+
+        // --- Docker Build Job (Container Ready) ---
+        let dockerJob = '';
+        if (deployTarget === 'docker') {
+                dockerJob = `  docker-build:
         if: github.event_name == 'push'
         runs-on: ubuntu-latest
         needs: [build, security-scan]
@@ -168,50 +166,94 @@ function generateWorkflowFile({ language, repoName, buildCommand, testCommand, d
                 with:
                     context: .
                     push: true
-                    tags: \${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:latest,\${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:\${{ github.sha }}
-            `;
-    }
+                    tags: \${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:latest,\${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:\${{ github.sha }}`;
+        }
 
-    // --- Azure Deployment Job ---
-    let deployJob = '';
-    if (deployTarget === 'azure-webapp') {
-        deployJob = `
-    deploy:
+        // --- Azure Deployment Job (code-based deploy) ---
+        let deployJob = '';
+        if (deployTarget === 'azure-webapp') {
+                deployJob = `  deploy:
         runs-on: ubuntu-latest
-        needs: [build, security-scan] # Can also depend on docker-build if we were deploying the container
+        needs: [build, security-scan]
         environment: Production
         steps:
-            - name: Checkout Repository
-                uses: actions/checkout@v4
+            - uses: actions/checkout@v4
+            - name: Prepare static website package
+                shell: bash
+                run: |
+                    set -euo pipefail
+                    if [ -d "public" ]; then
+                        echo "Using public/ as package source"
+                        echo "PACKAGE_DIR=public" >> $GITHUB_ENV
+                    else
+                        echo "Creating deploy/ and copying only static site files"
+                        mkdir -p deploy
+                        # Copy html/css/js files preserving directory structure
+                        find . -type f \( -name "*.html" -o -name "*.css" -o -name "*.js" \) -exec cp --parents -t deploy {} +
+                        # Common asset folders
+                        for d in assets static images fonts; do
+                            if [ -d "$d" ]; then
+                                mkdir -p deploy
+                                cp -r "$d" "deploy/$d"
+                            fi
+                        done
+                        echo "PACKAGE_DIR=deploy" >> $GITHUB_ENV
+                    fi
+            - name: Validate package structure
+                run: |
+                    if [ ! -f "\${{ env.PACKAGE_DIR }}/index.html" ]; then
+                        echo "index.html not found in \${{ env.PACKAGE_DIR }}"; exit 1;
+                    fi
+                    echo "Package directory: \${{ env.PACKAGE_DIR }}"
+                    ls -la "\${{ env.PACKAGE_DIR }}"
             - name: Deploy to Azure Web App
                 uses: azure/webapps-deploy@v2
                 with:
                     app-name: \${{ secrets.AZURE_WEBAPP_APP_NAME }}
                     publish-profile: \${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-                    package: .
-                    slot-name: \${{ secrets.AZURE_WEBAPP_SLOT_NAME }}`;
-    }
+                    package: \${{ env.PACKAGE_DIR }}
+                    slot-name: \${{ secrets.AZURE_WEBAPP_SLOT_NAME }}
+            - name: Publish deployment URL to GitHub Deployments
+                env:
+                    GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+                run: |
+                    APP_NAME='\${{ secrets.AZURE_WEBAPP_APP_NAME }}'
+                    SLOT='\${{ secrets.AZURE_WEBAPP_SLOT_NAME }}'
+                    if [ -z "$SLOT" ] || [ "$SLOT" = "production" ]; then
+                        APP_URL="https://$APP_NAME.azurewebsites.net"
+                    else
+                        APP_URL="https://$APP_NAME-$SLOT.azurewebsites.net"
+                    fi
+                    echo "App URL: $APP_URL"
+                    curl -s -L -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+                        -X POST "https://api.github.com/repos/\${{ github.repository }}/deployments" \
+                        -d "{\"ref\":\"\${{ github.sha }}\",\"environment\":\"Production\",\"auto_merge\":false,\"required_contexts\":[]}" > deploy.json
+                    DEPLOY_ID=$(node -e "console.log(JSON.parse(require('fs').readFileSync('deploy.json','utf8')).id || '')")
+                    if [ -z "$DEPLOY_ID" ]; then echo "Failed to create deployment"; exit 0; fi
+                    curl -s -L -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
+                        -X POST "https://api.github.com/repos/\${{ github.repository }}/deployments/$DEPLOY_ID/statuses" \
+                        -d "{\"state\":\"success\",\"environment_url\":\"$APP_URL\"}"`;
+        }
 
-    const yamlContent = `
-    name: CI Pipeline - ${repoName}
-    on:
-            workflow_dispatch:
-            push:
-                    branches: [ "${defaultBranch}" ]
-            pull_request:
-                    branches: [ "${defaultBranch}" ]
+        const yamlContent = `name: CI Pipeline - ${repoName}
+on:
+    workflow_dispatch:
+    push:
+        branches: [ "${defaultBranch}" ]
+    pull_request:
+        branches: [ "${defaultBranch}" ]
 env:
-  CI: true
+    CI: true
 jobs:
-  build:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
+    build:
+        runs-on: ubuntu-latest
+        steps:
+            - uses: actions/checkout@v4
 ${setupSteps}
-      - name: Build
-        run: ${buildCommand}
-      - name: Test
-        run: ${testCommand}
+            - name: Build
+                run: ${buildCommand}
+            - name: Test
+                run: ${testCommand}
 
 ${securityJob}
 
@@ -220,7 +262,7 @@ ${dockerJob}
 ${deployJob}
 `;
 
-    return yamlContent.trim();
+        return yamlContent.trim();
 }
 
 // --- Helper Functions ---
@@ -446,6 +488,16 @@ jobs:
                     package: .
                     slot-name: \${{ secrets.AZURE_WEBAPP_SLOT_NAME }}
 \`\`\`
+
+    Additional Guidance for Static Website (HTML/CSS/JS):
+
+    1. Only deploy necessary files: index.html, *.html, *.css, *.js, and asset folders (assets/, static/, images/, fonts/).
+    2. Prefer deploying the public/ folder if present; otherwise create a deploy/ folder with only static site files.
+    3. Validate that \${{ env.PACKAGE_DIR }}/index.html exists before deploy; fail fast if missing.
+    4. Use package: \${{ env.PACKAGE_DIR }} in the deploy step to avoid uploading .github/, node_modules/, etc.
+    5. Optionally add .zipignore to exclude non-site content if packaging repository root (not recommended here).
+
+    This ensures Azure Web App Zip Deploy receives a minimal, correct package for static sites and reduces deployment failures.
 `;
 }
 
@@ -482,7 +534,13 @@ async function createPullRequestForWorkflow({ repoName, filePath, content, langu
             } catch (err) {
                 if (err.status === 404) {
                     console.log('Dockerfile missing, creating one...');
-                    const dockerContent = generateDockerfile(language);
+                    let hasMavenWrapper = false;
+                    if (language === 'java') {
+                        try {
+                            hasMavenWrapper = await fileExists(owner, repo, 'mvnw');
+                        } catch (_) { /* noop */ }
+                    }
+                    const dockerContent = generateDockerfile(language, { hasMavenWrapper });
                     await upsertWorkflowFileOnBranch({
                         owner,
                         repo,
@@ -628,7 +686,7 @@ async function detectRepoLanguage(repoName) {
 
         const fileNames = files.map(f => f.name);
 
-        if (fileNames.some(f => f.endsWith('.names') || f.endsWith('.csproj') || f.endsWith('.sln'))) {
+        if (fileNames.some(f => f.endsWith('.csproj') || f.endsWith('.sln'))) {
             console.log('Detected .NET project.');
             return 'dotnet';
         }
@@ -1039,6 +1097,159 @@ async function approvePullRequest({ repoName, pullNumber }) {
     }
 }
 
+/**
+ * Get the latest workflow run for a given ref (branch or SHA).
+ */
+async function getLatestWorkflowRunForRef({ repoName, ref }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        const { data } = await octokit.actions.listWorkflowRunsForRepo({ owner, repo, per_page: 20 });
+        // Prefer exact ref match; fall back to most recent overall
+        const runs = Array.isArray(data.workflow_runs) ? data.workflow_runs : [];
+        const onRef = runs.filter(r => (r.head_branch === ref || r.head_sha === ref));
+        const latest = (onRef.length > 0 ? onRef : runs).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0] || null;
+        return latest;
+    } catch (e) {
+        console.warn('getLatestWorkflowRunForRef failed:', e.message);
+        return null;
+    }
+}
+
+/**
+ * Get the latest deployment URL (environment_url) from GitHub Deployments for a given ref.
+ */
+async function getLatestDeploymentUrl({ repoName, ref }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        const { data: deployments } = await octokit.repos.listDeployments({ owner, repo, per_page: 20 });
+        const filtered = deployments.filter(d => (d.ref === ref));
+        const latest = (filtered.length ? filtered : deployments).sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+        if (!latest) return null;
+        const { data: statuses } = await octokit.repos.listDeploymentStatuses({ owner, repo, deployment_id: latest.id });
+        const latestStatus = statuses.sort((a, b) => new Date(b.created_at) - new Date(a.created_at))[0];
+        return latestStatus && latestStatus.environment_url ? latestStatus.environment_url : null;
+    } catch (e) {
+        console.warn('getLatestDeploymentUrl failed:', e.message);
+        return null;
+    }
+}
+
+/**
+ * List jobs for a workflow run.
+ */
+async function getJobsForRun({ repoName, runId }) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        const { data } = await octokit.actions.listJobsForWorkflowRun({ owner, repo, run_id: runId });
+        return Array.isArray(data.jobs) ? data.jobs : [];
+    } catch (e) {
+        console.warn('getJobsForRun failed:', e.message);
+        return [];
+    }
+}
+
+/**
+ * Summarize a failure from a run and its jobs.
+ */
+function summarizeFailureFromRun({ run, jobs }) {
+    const failedJobs = jobs.filter(j => j.conclusion === 'failure');
+    const names = failedJobs.map(j => j.name).join(', ') || 'unknown';
+    const runUrl = run && run.html_url ? run.html_url : null;
+    const jobLinks = failedJobs.map(j => (j.html_url || runUrl)).filter(Boolean);
+    const lines = [];
+    lines.push(`Deployment failed. Failed job(s): ${names}.`);
+    if (jobLinks.length) {
+        lines.push('Logs:');
+        jobLinks.forEach(l => lines.push(`- ${l}`));
+    }
+    // Simple hints
+    lines.push('Common fixes:');
+    lines.push('- Verify required secrets (AZURE_WEBAPP_* or ACR_*).');
+    lines.push('- Fix build/test errors and rerun.');
+    lines.push('- Ensure deploy job conditions are met and not skipped.');
+    const azureFailed = failedJobs.some(j => {
+        const name = j.name || '';
+        const steps = Array.isArray(j.steps) ? j.steps : [];
+        const stepHit = steps.some(s => /azure|webapp|deploy/i.test((s && s.name) || ''));
+        return /azure|webapp|deploy/i.test(name) || stepHit;
+    });
+    if (azureFailed) {
+        lines.push('Azure Web App hints:');
+        lines.push('- Confirm AZURE_WEBAPP_PUBLISH_PROFILE secret contains valid XML from Azure portal.');
+        lines.push('- Verify AZURE_WEBAPP_APP_NAME matches the exact Web App name.');
+        lines.push('- If using slots, set AZURE_WEBAPP_SLOT_NAME correctly or omit for production.');
+        lines.push('- Check that the workflow has permissions to use GITHUB_TOKEN and secrets.');
+    }
+    return lines.join('\n');
+}
+
+// --- Org-level PR discovery & Jira key mapping ---
+
+// Extract a Jira key like ABC-123 from text
+function extractJiraKeyFromText(text) {
+    if (!text) return null;
+    const match = String(text).match(/([A-Z][A-Z0-9]+-\d+)/);
+    return match ? match[1] : null;
+}
+
+// List open PRs across an organization using the Search API
+async function listOpenOrgPullRequests({ org, perPage = 50, page = 1 }) {
+    const { data } = await octokit.search.issuesAndPullRequests({
+        q: `org:${org} is:pr is:open`,
+        per_page: perPage,
+        page
+    });
+    return data.items.map(item => {
+        const repoFullName = item.repository_url && item.repository_url.includes('/repos/')
+            ? item.repository_url.split('/repos/')[1]
+            : null;
+        return {
+            repoFullName,
+            number: item.number,
+            title: item.title,
+            html_url: item.html_url
+        };
+    });
+}
+
+// Get full PR details (including head SHA and branch) for a repo PR number
+async function getPullRequestDetailsByRepo({ repoFullName, number }) {
+    const [owner, repo] = repoFullName.split('/');
+    const { data } = await octokit.pulls.get({ owner, repo, pull_number: number });
+    return data;
+}
+
+// Get open org PRs with inferred Jira keys and head sha for reconciliation
+async function getActiveOrgPRsWithJiraKeys({ org, maxPages = 4 }) {
+    const results = [];
+    for (let page = 1; page <= maxPages; page++) {
+        const items = await listOpenOrgPullRequests({ org, page });
+        if (!items.length) break;
+        for (const item of items) {
+            if (!item.repoFullName) continue;
+            try {
+                const pr = await getPullRequestDetailsByRepo({ repoFullName: item.repoFullName, number: item.number });
+                const keyFromTitle = extractJiraKeyFromText(pr.title);
+                const keyFromBody = extractJiraKeyFromText(pr.body);
+                const keyFromBranch = extractJiraKeyFromText(pr.head && pr.head.ref);
+                const jiraKey = keyFromTitle || keyFromBody || keyFromBranch;
+                results.push({
+                    repoName: item.repoFullName,
+                    prNumber: pr.number,
+                    prUrl: pr.html_url,
+                    branch: pr.head && pr.head.ref,
+                    headSha: pr.head && pr.head.sha,
+                    jiraKey
+                });
+            } catch (e) {
+                console.warn('Failed to fetch PR details for', item.repoFullName, item.number, e.message);
+            }
+        }
+    }
+    // Filter to those we could infer a Jira key for
+    return results.filter(r => !!r.jiraKey);
+}
+
 module.exports = {
     generateWorkflowFile,
     createPullRequestForWorkflow,
@@ -1058,6 +1269,13 @@ module.exports = {
     mergePullRequest,
     enablePullRequestAutoMerge,
     isPullRequestMerged,
-    approvePullRequest
+    approvePullRequest,
+    getLatestWorkflowRunForRef,
+    getJobsForRun,
+    summarizeFailureFromRun
+    , getLatestDeploymentUrl
+    , extractJiraKeyFromText
+    , listOpenOrgPullRequests
+    , getActiveOrgPRsWithJiraKeys
 };
 
