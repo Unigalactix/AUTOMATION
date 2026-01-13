@@ -73,37 +73,38 @@ function generateWorkflowFile({ language, repoName, buildCommand, testCommand, d
     buildCommand = buildCommand || 'npm run build';
     testCommand = testCommand || 'npm test';
 
-        // Language-specific setup steps
-                const languageSteps = {
-                                'node': `            - name: Set up Node.js
-                            uses: actions/setup-node@v4
-                            with:
-                                node-version: '20'
-                        - name: Install dependencies
-                            run: npm ci
-                        - name: Running NPM Audit
-                            shell: bash
-                            run: |
-                                if [ -f "package-lock.json" ]; then
-                                    echo "Using npm for dependency checks"
-                                    npm audit --production --json || true
-                                fi`,
+    // Language-specific setup steps
+    const languageSteps = {
+        'node': `            - name: Setup Node.js
+                uses: actions/setup-node@v4
+                with:
+                    node-version: '20'
+                    cache: 'npm'
+            - name: Install dependencies
+                run: npm ci
+            - name: Running NPM Audit
+                shell: bash
+                run: |
+                    if [ -f "package-lock.json" ]; then
+                        echo "Using npm for dependency checks"
+                        npm audit --production --json || true
+                    fi`,
 
-                                'python': `            - name: Set up Python
+        'python': `            - name: Set up Python
                             uses: actions/setup-python@v4
                             with:
                                 python-version: '3.10'
                         - name: Install dependencies
                             run: pip install -r requirements.txt`,
 
-                                'dotnet': `            - name: Set up .NET
+        'dotnet': `            - name: Set up .NET
                             uses: actions/setup-dotnet@v4
                             with:
                                 dotnet-version: '8.0.x'
                         - name: Restore dependencies
                             run: dotnet restore`,
 
-                                'java': `            - name: Set up JDK 17
+        'java': `            - name: Set up JDK 17
                             uses: actions/setup-java@v4
                             with:
                                 java-version: '17'
@@ -111,22 +112,26 @@ function generateWorkflowFile({ language, repoName, buildCommand, testCommand, d
                                 cache: maven
                         - name: Build with Maven
                             run: ./mvnw clean package`
-                };
+    };
 
-        // Default to node if language not found
-        const setupSteps = languageSteps[language] || languageSteps['node'];
+    // Default to node if language not found
+    const setupSteps = languageSteps[language] || languageSteps['node'];
 
-        // --- Security Job (CodeQL) ---
-        const codeqlMap = {
-                'node': 'javascript',
-                'python': 'python',
-                'dotnet': 'csharp',
-                'java': 'java'
-        };
-        const codeqlLang = codeqlMap[language] || 'javascript';
+    // --- Security Job (CodeQL) ---
+    const codeqlMap = {
+        'node': 'javascript',
+        'python': 'python',
+        'dotnet': 'csharp',
+        'java': 'java'
+    };
+    const codeqlLang = codeqlMap[language] || 'javascript';
 
-        const securityJob = `  security-scan:
+    const securityJob = `  # -------------------------------------------------
+    # JOB 2: SECURITY SCANS
+    # -------------------------------------------------
+    security-scan:
         runs-on: ubuntu-latest
+        needs: build
         permissions:
             security-events: write
             actions: read
@@ -136,124 +141,113 @@ function generateWorkflowFile({ language, repoName, buildCommand, testCommand, d
             - name: Initialize CodeQL
                 uses: github/codeql-action/init@v3
                 with:
-                    languages: ${codeqlLang}
+                    languages: \${{ env.CODEQL_LANGUAGE }}
             - name: Autobuild
                 uses: github/codeql-action/autobuild@v3
             - name: Perform CodeQL Analysis
                 uses: github/codeql-action/analyze@v3`;
 
-        // --- Docker Build Job (Container Ready) ---
-        let dockerJob = '';
-        if (deployTarget === 'docker') {
-                dockerJob = `  docker-build:
-        if: github.event_name == 'push'
+
+
+    // --- Docker Build Job (Container Ready) ---
+    let dockerJob = '';
+    if (deployTarget === 'docker') {
+        dockerJob = `  # -------------------------------------------------
+    # JOB 3: DOCKER BUILD & PUSH
+    # -------------------------------------------------
+    docker-build:
         runs-on: ubuntu-latest
         needs: [build, security-scan]
         permissions:
             contents: read
+        env:
+            ACR_LOGIN_SERVER: \${{ secrets.ACR_LOGIN_SERVER }}
+            ACR_USERNAME: \${{ secrets.ACR_USERNAME }}
+            ACR_PASSWORD: \${{ secrets.ACR_PASSWORD }}
         steps:
             - uses: actions/checkout@v4
             - name: Compute lowercase repo name
                 run: echo "REPO_LOWER=\$(echo '\${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
             - name: Log in to Azure Container Registry
+                if: env.ACR_LOGIN_SERVER != ''
                 uses: docker/login-action@v3
                 with:
-                    registry: \${{ secrets.ACR_LOGIN_SERVER }}
-                    username: \${{ secrets.ACR_USERNAME }}
-                    password: \${{ secrets.ACR_PASSWORD }}
+                    registry: \${{ env.ACR_LOGIN_SERVER }}
+                    username: \${{ env.ACR_USERNAME }}
+                    password: \${{ env.ACR_PASSWORD }}
             - name: Build and push
+                if: env.ACR_LOGIN_SERVER != ''
                 uses: docker/build-push-action@v5
                 with:
                     context: .
                     push: true
-                    tags: \${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:latest,\${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:\${{ github.sha }}`;
-        }
+                    tags: |
+                        \${{ env.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:latest
+                        \${{ env.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:\${{ github.sha }}`;
+    }
 
-        // --- Azure Deployment Job (code-based deploy) ---
-        let deployJob = '';
-        if (deployTarget === 'azure-webapp') {
-                deployJob = `  deploy:
+    // --- Azure Deployment Job (code-based deploy) ---
+    let deployJob = '';
+    if (deployTarget === 'azure-webapp') {
+        deployJob = `  # -------------------------------------------------
+    # JOB 4: DEPLOYMENT
+    # -------------------------------------------------
+    deploy:
         runs-on: ubuntu-latest
         needs: [build, security-scan]
-        environment: Production
+        env:
+            AZURE_WEBAPP_PUBLISH_PROFILE: \${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+            AZURE_WEBAPP_APP_NAME: \${{ secrets.AZURE_WEBAPP_APP_NAME }}
+            AZURE_WEBAPP_SLOT_NAME: \${{ secrets.AZURE_WEBAPP_SLOT_NAME }}
         steps:
             - uses: actions/checkout@v4
-            - name: Prepare static website package
-                shell: bash
-                run: |
-                    set -euo pipefail
-                    if [ -d "public" ]; then
-                        echo "Using public/ as package source"
-                        echo "PACKAGE_DIR=public" >> $GITHUB_ENV
-                    else
-                        echo "Creating deploy/ and copying only static site files"
-                        mkdir -p deploy
-                        # Copy html/css/js files preserving directory structure
-                        find . -type f \( -name "*.html" -o -name "*.css" -o -name "*.js" \) -exec cp --parents -t deploy {} +
-                        # Common asset folders
-                        for d in assets static images fonts; do
-                            if [ -d "$d" ]; then
-                                mkdir -p deploy
-                                cp -r "$d" "deploy/$d"
-                            fi
-                        done
-                        echo "PACKAGE_DIR=deploy" >> $GITHUB_ENV
-                    fi
-            - name: Validate package structure
-                run: |
-                    if [ ! -f "\${{ env.PACKAGE_DIR }}/index.html" ]; then
-                        echo "index.html not found in \${{ env.PACKAGE_DIR }}"; exit 1;
-                    fi
-                    echo "Package directory: \${{ env.PACKAGE_DIR }}"
-                    ls -la "\${{ env.PACKAGE_DIR }}"
+            - name: Setup Node.js
+                uses: actions/setup-node@v4
+                with:
+                    node-version: 20
             - name: Deploy to Azure Web App
+                if: env.AZURE_WEBAPP_PUBLISH_PROFILE != ''
                 uses: azure/webapps-deploy@v2
                 with:
-                    app-name: \${{ secrets.AZURE_WEBAPP_APP_NAME }}
-                    publish-profile: \${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-                    package: \${{ env.PACKAGE_DIR }}
-                    slot-name: \${{ secrets.AZURE_WEBAPP_SLOT_NAME }}
-            - name: Publish deployment URL to GitHub Deployments
-                env:
-                    GITHUB_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-                run: |
-                    APP_NAME='\${{ secrets.AZURE_WEBAPP_APP_NAME }}'
-                    SLOT='\${{ secrets.AZURE_WEBAPP_SLOT_NAME }}'
-                    if [ -z "$SLOT" ] || [ "$SLOT" = "production" ]; then
-                        APP_URL="https://$APP_NAME.azurewebsites.net"
-                    else
-                        APP_URL="https://$APP_NAME-$SLOT.azurewebsites.net"
-                    fi
-                    echo "App URL: $APP_URL"
-                    curl -s -L -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
-                        -X POST "https://api.github.com/repos/\${{ github.repository }}/deployments" \
-                        -d "{\"ref\":\"\${{ github.sha }}\",\"environment\":\"Production\",\"auto_merge\":false,\"required_contexts\":[]}" > deploy.json
-                    DEPLOY_ID=$(node -e "console.log(JSON.parse(require('fs').readFileSync('deploy.json','utf8')).id || '')")
-                    if [ -z "$DEPLOY_ID" ]; then echo "Failed to create deployment"; exit 0; fi
-                    curl -s -L -H "Authorization: Bearer $GITHUB_TOKEN" -H "Accept: application/vnd.github+json" \
-                        -X POST "https://api.github.com/repos/\${{ github.repository }}/deployments/$DEPLOY_ID/statuses" \
-                        -d "{\"state\":\"success\",\"environment_url\":\"$APP_URL\"}"`;
-        }
+                    app-name: \${{ env.AZURE_WEBAPP_APP_NAME }}
+                    publish-profile: \${{ env.AZURE_WEBAPP_PUBLISH_PROFILE }}
+                    package: .
+                    slot-name: \${{ env.AZURE_WEBAPP_SLOT_NAME }}`;
+    }
 
-        const yamlContent = `name: CI Pipeline - ${repoName}
+    const yamlContent = `name: CI Pipeline - ${repoName}
 on:
     workflow_dispatch:
     push:
-        branches: [ "${defaultBranch}" ]
+        branches: ["${defaultBranch}"]
     pull_request:
-        branches: [ "${defaultBranch}" ]
+        branches: ["${defaultBranch}"]
 env:
     CI: true
+    BUILD_COMMAND: ${buildCommand}
+    TEST_COMMAND: ${testCommand}
+    CODEQL_LANGUAGE: ${codeqlLang}
 jobs:
+    # -------------------------------------------------
+    # JOB 1: BUILD & TEST
+    # -------------------------------------------------
     build:
         runs-on: ubuntu-latest
         steps:
             - uses: actions/checkout@v4
 ${setupSteps}
             - name: Build
-                run: ${buildCommand}
+                run: \${{ env.BUILD_COMMAND }}
             - name: Test
-                run: ${testCommand}
+                run: \${{ env.TEST_COMMAND }}
+            - name: Upload build logs
+                if: always()
+                uses: actions/upload-artifact@v4
+                with:
+                    name: build-logs
+                    path: npm-debug.log*
+                    retention-days: 7
+                    if-no-files-found: ignore
 
 ${securityJob}
 
@@ -262,7 +256,7 @@ ${dockerJob}
 ${deployJob}
 `;
 
-        return yamlContent.trim();
+    return yamlContent.trim();
 }
 
 // --- Helper Functions ---
@@ -277,7 +271,7 @@ async function ensureFeatureBranch({ owner, repo, defaultBranch, featureBranch }
     const { data: baseRef } = await octokit.git.getRef({
         owner,
         repo,
-        ref: `heads/${defaultBranch}`,
+        ref: `heads / ${defaultBranch} `,
     });
 
     // 2. Try to get feature branch
@@ -285,7 +279,7 @@ async function ensureFeatureBranch({ owner, repo, defaultBranch, featureBranch }
         await octokit.git.getRef({
             owner,
             repo,
-            ref: `heads/${featureBranch}`,
+            ref: `heads / ${featureBranch} `,
         });
         console.log(`Branch ${featureBranch} already exists.`);
         return;
@@ -297,7 +291,7 @@ async function ensureFeatureBranch({ owner, repo, defaultBranch, featureBranch }
     await octokit.git.createRef({
         owner,
         repo,
-        ref: `refs/heads/${featureBranch}`,
+        ref: `refs / heads / ${featureBranch} `,
         sha: baseRef.object.sha,
     });
     console.log(`Created branch ${featureBranch}.`);
@@ -357,7 +351,7 @@ async function createWorkflowPR({ owner, repo, featureBranch, defaultBranch, tit
         owner,
         repo,
         state: 'open',
-        head: `${owner}:${featureBranch}`,
+        head: `${owner}:${featureBranch} `,
         base: defaultBranch,
     });
 
@@ -402,91 +396,117 @@ function generateCopilotPrompt({ issueKey, summary, description, repoConfig, rep
 ${description || ''}
 
 Read the whole repository first
-& then please generate a CI/CD pipeline file based on this repo using the format below(ignore if already exists and working):
-\`\`\`yaml
+        & then please generate a CI / CD pipeline file based on this repo using the format below(ignore if already exists and working):
+    \`\`\`yaml
 name: CI Pipeline - ${REPO_NAME}
+
 on:
   push:
-    branches: [ "${DEFAULT_BRANCH}" ]
+    branches: ["main"]
   pull_request:
-    branches: [ "${DEFAULT_BRANCH}" ]
+    branches: ["main"]
+ 
 env:
   CI: true
+  BUILD_COMMAND: npm run build
+  TEST_COMMAND: npm test
+  CODEQL_LANGUAGE: javascript
+ 
 jobs:
-
-  --- JOB 1: BUILD & TEST ---
+ 
+  # -------------------------------------------------
+  # JOB 1: BUILD & TEST
+  # -------------------------------------------------
   build:
     runs-on: ubuntu-latest
+ 
     steps:
-    - uses: actions/checkout@v4
-
-      # [DYNAMIC] Setup Logic based on Language Detected
-      # Language: ${language}
-      
-      # [DYNAMIC] Commands injected from Repo Analysis (package.json/pom.xml) or Defaults
+      - name: Checkout source
+        uses: actions/checkout@v4
+ 
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+ 
+      - name: Install dependencies
+        run: npm ci
+ 
       - name: Build
-        run: ${BUILD_COMMAND}
+        run: \${{ env.BUILD_COMMAND }}
+ 
       - name: Test
-        run: ${TEST_COMMAND}
-
-  --- JOB 2: SECURITY SCANS ---
+        run: \${{ env.TEST_COMMAND }}
+ 
+  # -------------------------------------------------
+  # JOB 2: SECURITY SCANS
+  # -------------------------------------------------
   security-scan:
     runs-on: ubuntu-latest
     permissions:
       security-events: write
       actions: read
       contents: read
+ 
     steps:
-    - uses: actions/checkout@v4
-    - name: Initialize CodeQL
-      uses: github/codeql-action/init@v3
-      with:
-        languages: ${CODEQL_LANGUAGE}
-    - name: Autobuild
-      uses: github/codeql-action/autobuild@v3
-    - name: Perform CodeQL Analysis
-      uses: github/codeql-action/analyze@v3
-
-    --- JOB 3: CONTAINERIZATION (Conditional) ---
-    # Generates if deploy target is 'docker' OR 'azure-webapp'
-    docker-build:
-        runs-on: ubuntu-latest
-        needs: [build, security-scan]
-        permissions:
-            contents: read
-        steps:
-        - uses: actions/checkout@v4
-        - name: Compute lowercase repo name
-            run: echo "REPO_LOWER=\$(echo '\${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
-        - name: Log in to Azure Container Registry
-            uses: docker/login-action@v3
-            with:
-                registry: \${{ secrets.ACR_LOGIN_SERVER }}
-                username: \${{ secrets.ACR_USERNAME }}
-                password: \${{ secrets.ACR_PASSWORD }}
-        - name: Build and push
-            uses: docker/build-push-action@v5
-            with:
-                context: .
-                push: true
-                tags: \${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:latest,\${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:\${{ github.sha }}
-            
-
-  --- JOB 4: DEPLOYMENT (Conditional) ---
-  # Generates if deploy target is 'azure-webapp'
-  deploy:
+      - uses: actions/checkout@v4
+ 
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: \${{ env.CODEQL_LANGUAGE }}
+ 
+      - name: Autobuild
+        uses: github/codeql-action/autobuild@v3
+ 
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+ 
+  # -------------------------------------------------
+  # JOB 3: DOCKER BUILD & PUSH
+  # -------------------------------------------------
+  docker-build:
     runs-on: ubuntu-latest
     needs: [build, security-scan]
-    environment: Production
+ 
     steps:
-    - uses: actions/checkout@v4
-    - name: Deploy to Azure Web App
-      uses: azure/webapps-deploy@v2
-      with:
-        app-name: '\${{ secrets.AZURE_WEBAPP_APP_NAME }}'
-        publish-profile: \${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
-                    package: .
-                    slot-name: \${{ secrets.AZURE_WEBAPP_SLOT_NAME }}
+      - uses: actions/checkout@v4
+ 
+      - name: Compute lowercase repo name
+        run: |
+          echo "REPO_LOWER=$(echo '\${{ github.repository }}' | tr '[:upper:]' '[:lower:]')" >> $GITHUB_ENV
+ 
+      - name: Login to ACR
+        uses: docker/login-action@v3
+        with:
+          registry: \${{ secrets.ACR_LOGIN_SERVER }}
+          username: \${{ secrets.ACR_USERNAME }}
+          password: \${{ secrets.ACR_PASSWORD }}
+ 
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            \${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:latest
+            \${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:\${{ github.sha }}
+ 
+  # -------------------------------------------------
+  # JOB 4: DEPLOY (Publish Profile, Image-based)
+  # -------------------------------------------------
+  deploy:
+    runs-on: ubuntu-latest
+    needs: docker-build
+ 
+    steps:
+      - name: Deploy to Azure Web App
+        uses: azure/webapps-deploy@v2
+        with:
+          app-name: \${{ secrets.AZURE_WEBAPP_APP_NAME }}
+          publish-profile: \${{ secrets.AZURE_WEBAPP_PUBLISH_PROFILE }}
+          images: \${{ secrets.ACR_LOGIN_SERVER }}/\${{ env.REPO_LOWER }}:\${{ github.sha }}
 \`\`\`
 
     Additional Guidance for Static Website (HTML/CSS/JS):
