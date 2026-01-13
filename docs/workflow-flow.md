@@ -22,8 +22,7 @@ flowchart TD
     S4[Generate Workflow YAML]
     S5[Ensure Feature Branch]
     S6["Upsert Files (Workflow / Dockerfile)"]
-    S7[Create or Reuse PR]
-    S8[Comment PR with Copilot Prompt]
+    S7[Create PR (Prompt in Body)]
     S9[Monitor Runs & Jobs]
     S10[Summarize Failures + Hints]
     S11[Reconcile Active PRs on Restart]
@@ -55,7 +54,6 @@ flowchart TD
   %% Main happy path
   J1 -->|Autopilot poll| S1 --> S2 --> S3 --> S4 --> S5 --> S6 --> S7 --> G1
   S2 -->|Transition| J2
-  S7 -->|Comment PR| S8 --> G2
   G1 -->|Triggers| A1 --> A2 --> A3
   A3 -- yes --> A4 --> A5
   A3 -- no --> A5

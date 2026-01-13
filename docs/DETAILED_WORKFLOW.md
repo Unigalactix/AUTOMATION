@@ -61,12 +61,12 @@ graph TD
     ProjectDetect --> CheckAI{🧠 AI Enabled?}
     
     CheckAI -->|No| TemplateGen[📄 Load Static Template]
-    CheckAI -->|Yes| CopilotPrompt[🤖 GitHub Copilot CLI]
+    CheckAI -->|Yes| CopilotPrompt[🤖 Generate Copilot Prompt]
     
-    CopilotPrompt -->|API Timeout/Fail| FallbackMode[⚠️ Fallback to Template]
-    CopilotPrompt -->|Success| CodeGen[✨ Copilot Generated Code/Workflow]
-    TemplateGen --> CodeGen
-    FallbackMode --> CodeGen
+    CopilotPrompt -->|Failure| FallbackMode[⚠️ Fallback to Template]
+    CopilotPrompt -->|Success| PromptGen[✨ Prompt Embedded in PR]
+    TemplateGen --> PromptGen
+    FallbackMode --> PromptGen
 
     subgraph GITHUB_OPS [🐙 GitHub Operations]
         direction TB
@@ -74,7 +74,7 @@ graph TD
         GitPush[⬆️ Push Code]
         CreatePR[📝 Create Pull Request]
         
-        CodeGen --> GitBranch
+        PromptGen --> GitBranch
         GitBranch -->|Branch Exists?| HandleExisting{Reuse or Reset?}
         HandleExisting -->|Reset| GitForcePush[Force Push Update]
         HandleExisting -->|Reuse| GitPush
@@ -145,8 +145,10 @@ graph TD
 3.  **Validation**: Ensures the ticket has necessary metadata (Repo URL, etc.). If missing, it logs a warning and skips processing to prevent crashing.
 
 ### Phase 2: Execution & Code Generation (GitHub Copilot)
-1.  **AI Orchestration via GitHub Copilot (Optional)**: If `USE_GH_COPILOT=true`, the system constructs a prompt containing the ticket requirements and feeds it to the GitHub Copilot CLI.
-    *   **Failure Mode**: If GitHub Copilot Service is down or times out, the system gracefully degrades to using a standard CI/CD template ("Fallback Mode") to ensure a basic pipeline is still created.
+1.  **AI Orchestration via GitHub Copilot (Optional)**: If `USE_GH_COPILOT=true`, the system:
+    *   **Pre-PR**: Optionally runs `gh copilot suggest` to apply fixes or generate initial workflow content.
+    *   **Prompt Generation**: Constructs a detailed prompt containing the Ticket instructions and embeds it directly into the **Pull Request Body**.
+    *   **Failure Mode**: If the local CLI fails, the system gracefully degrades to using a standard template but still includes the Prompt in the PR for manual review.
 2.  **Git Operations**:
     *   Creates a standardized branch name: `chore/{ticket-key}-workflow-setup`.
     *   If the branch already exists (re-run), it force-pushes the latest changes.
