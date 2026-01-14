@@ -181,7 +181,24 @@ app.post('/api/inspector', (req, res) => {
     }
 });
 
-
+// --- Download Logs Endpoint ---
+app.get('/api/logs/download', (req, res) => {
+    const logFile = path.join(LOG_DIR, 'server.log');
+    if (fs.existsSync(logFile)) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `server_${timestamp}.log`;
+        res.download(logFile, filename, (err) => {
+            if (err) {
+                console.error('[API] Error downloading log file:', err);
+                if (!res.headersSent) {
+                    res.status(500).send('Error downloading file');
+                }
+            }
+        });
+    } else {
+        res.status(404).send('Log file not found');
+    }
+});
 
 // --- Helper: Log Progress ---
 function logProgress(message) {
