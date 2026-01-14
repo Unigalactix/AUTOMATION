@@ -11,6 +11,7 @@
 This document details the architectural workflow of the **Jira Autopilot** system. It serves as a blueprint for the automation logic, defining data flow between the core orchestration engine (`server.js`), the External Project Management system (Jira), and the Version Control system (GitHub). This specification includes extensive "What-If" failure analysis to ensure system resilience.
 ## BASIC HIGH LEVEL WORKFLOW
 
+```mermaid
 flowchart LR
     %% Define Styles
     classDef plain fill:#fff,stroke:#333,stroke-width:2px;
@@ -50,6 +51,7 @@ flowchart LR
     
     Action -->|Build & Push Image| ACR
     ACR -->|Deploy Container| AppService
+```
 
 ## 2. Core Workflow Diagram
 
