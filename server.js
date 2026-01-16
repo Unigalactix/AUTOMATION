@@ -181,7 +181,24 @@ app.post('/api/inspector', (req, res) => {
     }
 });
 
-
+// --- Download Logs Endpoint ---
+app.get('/api/logs/download', (req, res) => {
+    const logFile = path.join(LOG_DIR, 'server.log');
+    if (fs.existsSync(logFile)) {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const filename = `server_${timestamp}.log`;
+        res.download(logFile, filename, (err) => {
+            if (err) {
+                console.error('[API] Error downloading log file:', err);
+                if (!res.headersSent) {
+                    res.status(500).send('Error downloading file');
+                }
+            }
+        });
+    } else {
+        res.status(404).send('Log file not found');
+    }
+});
 
 // --- Helper: Log Progress ---
 function logProgress(message) {
@@ -615,7 +632,7 @@ async function startPolling() {
                     console.log(`[Autopilot] Resumed monitoring PR ${pr.prUrl} for ticket ${issueKey}.`);
                     try {
                         await addComment(issueKey, `🔁 Server restarted: resuming monitoring for active PR\nPR: ${pr.prUrl}`);
-                    } catch (_) {}
+                    } catch (_) { }
                 } catch (e) {
                     console.warn(`[Autopilot] Failed to reconcile ${issueKey}: ${e.message}`);
                 }
@@ -768,7 +785,7 @@ async function startPolling() {
                                 await addComment(ticket.key, `✅ **PR Ready for Review**\n\nLink: ${ticket.prUrl}`);
                                 ticket.prReadyCommented = true;
                             }
-                        } catch (_) {}
+                        } catch (_) { }
                     }
 
                     // PR lifecycle comments: Merged
@@ -778,9 +795,10 @@ async function startPolling() {
                             const merged = await isPullRequestMerged({ repoName: ticket.repoName, pullNumber: mainPrNumber });
                             if (merged && merged.merged) {
                                 await addComment(ticket.key, `🎉 **PR Merged**\n\nLink: ${ticket.prUrl}`);
+                                await transitionIssue(ticket.key, 'Done');
                                 ticket.prMergedCommented = true;
                             }
-                        } catch (_) {}
+                        } catch (_) { }
                     }
 
                     // Deployment detection via workflow runs
@@ -793,7 +811,7 @@ async function startPolling() {
                         appUrl = 'https://mvdemoapp.azurewebsites.net';
                     }
                     // Post failure early if any job has concluded failure/cancelled/timed_out
-                    const anyFailedJob = jobs.find(j => ['failure','cancelled','timed_out'].includes(j.conclusion) && j.status === 'completed');
+                    const anyFailedJob = jobs.find(j => ['failure', 'cancelled', 'timed_out'].includes(j.conclusion) && j.status === 'completed');
                     if (!ticket.failureCommentPosted && anyFailedJob && latestRun) {
                         const summary = summarizeFailureFromRun({ run: latestRun, jobs });
                         await addComment(ticket.key, `❌ **Deployment Failed**\n\n${summary}`);
