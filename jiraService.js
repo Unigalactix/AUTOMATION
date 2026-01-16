@@ -198,5 +198,63 @@ module.exports = {
     transitionIssue,
     addComment,
     getAllProjectKeys,
-    getIssueDetails
+    getIssueDetails,
+    getAllProjectKeys,
+    getIssueDetails,
+    createIssue,
+    getProjects
 };
+
+/**
+ * Fetch all projects with details
+ */
+async function getProjects() {
+    try {
+        const result = await jiraRequest('/rest/api/3/project');
+        return Array.isArray(result) ? result : [];
+    } catch (error) {
+        console.error('[Jira Service] Failed to fetch projects:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Create a new Jira issue
+ */
+async function createIssue(projectKey, summary, description, issueType = 'Task') {
+    try {
+        const body = {
+            fields: {
+                project: {
+                    key: projectKey
+                },
+                summary: summary,
+                description: {
+                    type: "doc",
+                    version: 1,
+                    content: [
+                        {
+                            type: "paragraph",
+                            content: [
+                                {
+                                    type: "text",
+                                    text: description
+                                }
+                            ]
+                        }
+                    ]
+                },
+                issuetype: {
+                    name: issueType
+                }
+            }
+        };
+
+        const result = await jiraRequest('/rest/api/3/issue', 'POST', body);
+        console.log(`Created Jira ticket: ${result.key}`);
+        return result;
+    } catch (error) {
+        console.error('Error creating Jira ticket:', error.message);
+        throw error;
+    }
+}

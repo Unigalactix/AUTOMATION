@@ -1296,8 +1296,119 @@ module.exports = {
     getJobsForRun,
     summarizeFailureFromRun
     , getLatestDeploymentUrl
-    , extractJiraKeyFromText
-    , listOpenOrgPullRequests
-    , getActiveOrgPRsWithJiraKeys
+    , checkRepoAccess
+    , getRepoRootFiles
+    , getRepoDirectoryFiles
+    , getRepoFileContent
+    , listAccessibleRepos
 };
+
+/**
+ * Lists accessible repositories. 
+ * If ALLOWED_ORGS is set, lists for that org. 
+ * Otherwise lists for authenticated user.
+ */
+async function listAccessibleRepos() {
+    try {
+        const allowedOrgsStr = process.env.ALLOWED_ORGS;
+        let repos = [];
+
+        if (allowedOrgsStr) {
+            const orgs = allowedOrgsStr.split(',').map(s => s.trim());
+            for (const org of orgs) {
+                try {
+                    console.log(`[GitHub Service] Fetching repos for org: ${org}`);
+                    const { data } = await octokit.repos.listForOrg({
+                        org,
+                        sort: 'updated',
+                        direction: 'desc',
+                        per_page: 100
+                    });
+                    repos = repos.concat(data);
+                } catch (orgError) {
+                    console.warn(`[GitHub Service] Failed to list repos for org '${org}': ${orgError.message}`);
+                    // Continue to next org or fallback
+                }
+            }
+        }
+
+        // If we found nothing from orgs (or didn't try), try authenticated user
+        if (repos.length === 0) {
+            console.log('[GitHub Service] Fetching repositories for authenticated user...');
+            try {
+                const { data } = await octokit.repos.listForAuthenticatedUser({
+                    sort: 'updated',
+                    direction: 'desc',
+                    per_page: 100,
+                    visibility: 'all'
+                });
+                repos = data;
+            } catch (userError) {
+                console.error('[GitHub Service] Failed to list user repos:', userError.message);
+            }
+        }
+
+        return repos.map(r => ({
+            full_name: r.full_name,
+            private: r.private,
+            description: r.description
+        }));
+    } catch (error) {
+        console.error('Failed to list repositories:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Verifies if the PAT can access the repo.
+ */
+async function checkRepoAccess(repoName) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        await octokit.repos.get({ owner, repo });
+        return { accessible: true };
+    } catch (error) {
+        return { accessible: false, error: error.message };
+    }
+}
+
+/**
+ * Lists files in the root directory of the repo.
+ */
+async function getRepoRootFiles(repoName) {
+    return getRepoDirectoryFiles(repoName, '');
+}
+
+/**
+ * Lists files in a specific directory.
+ */
+async function getRepoDirectoryFiles(repoName, path = '') {
+    const [owner, repo] = repoName.split('/');
+    try {
+        const { data } = await octokit.repos.getContent({ owner, repo, path });
+        return Array.isArray(data) ? data.map(f => f.name) : [];
+    } catch (error) {
+        if (error.status === 404) return [];
+        console.error(`Failed to get files for ${repoName}/${path}:`, error.message);
+        return [];
+    }
+}
+
+/**
+ * Fetches the content of a specific file. Returns null if not found.
+ */
+async function getRepoFileContent(repoName, path) {
+    const [owner, repo] = repoName.split('/');
+    try {
+        const { data } = await octokit.repos.getContent({ owner, repo, path });
+        if (data.content) {
+            return Buffer.from(data.content, 'base64').toString('utf-8');
+        }
+        return null;
+    } catch (error) {
+        if (error.status === 404) return null;
+        console.error(`Failed to get file content for ${repoName}/${path}:`, error.message);
+        throw error;
+    }
+}
 
