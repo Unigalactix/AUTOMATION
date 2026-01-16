@@ -199,10 +199,10 @@ module.exports = {
     addComment,
     getAllProjectKeys,
     getIssueDetails,
-    getAllProjectKeys,
-    getIssueDetails,
     createIssue,
-    getProjects
+    getProjects,
+    searchIssues,
+    updateIssue
 };
 
 /**
@@ -255,6 +255,63 @@ async function createIssue(projectKey, summary, description, issueType = 'Task')
         return result;
     } catch (error) {
         console.error('Error creating Jira ticket:', error.message);
+        throw error;
+    }
+}
+
+/**
+ * Search for issues using JQL
+ */
+async function searchIssues(jql) {
+    try {
+        const result = await jiraRequest('/rest/api/3/search/jql', 'POST', {
+            jql: jql,
+            maxResults: 10,
+            fields: ['summary', 'status'] // Fetch minimal fields
+        });
+        return result.issues || [];
+    } catch (error) {
+        console.error('Error searching Jira issues:', error.message);
+        return [];
+    }
+}
+
+/**
+ * Update an existing Jira issue
+ * @param {string} issueKey 
+ * @param {object} fields { summary: string, description: string } (Raw strings, converted to ADF internally)
+ */
+async function updateIssue(issueKey, fields) {
+    try {
+        const updateBody = { fields: {} };
+
+        if (fields.summary) {
+            updateBody.fields.summary = fields.summary;
+        }
+
+        if (fields.description) {
+            updateBody.fields.description = {
+                type: "doc",
+                version: 1,
+                content: [
+                    {
+                        type: "paragraph",
+                        content: [
+                            {
+                                type: "text",
+                                text: fields.description
+                            }
+                        ]
+                    }
+                ]
+            };
+        }
+
+        await jiraRequest(`/rest/api/3/issue/${issueKey}`, 'PUT', updateBody);
+        console.log(`Updated Jira ticket: ${issueKey}`);
+        return true;
+    } catch (error) {
+        console.error(`Error updating Jira ticket ${issueKey}:`, error.message);
         throw error;
     }
 }

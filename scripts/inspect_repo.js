@@ -7,7 +7,9 @@ const {
 } = require('../githubService');
 const {
     createIssue,
-    getProjects
+    getProjects,
+    searchIssues,
+    updateIssue
 } = require('../jiraService');
 require('dotenv').config();
 
@@ -134,15 +136,47 @@ async function inspectRepo() {
             for (const finding of findings) {
                 let success = false;
                 while (!success) {
+                    // Generate Description with Template
+                    let buildCmd = 'N/A';
+                    let testCmd = 'N/A';
+                    if (lowerFiles.includes('package.json')) {
+                        buildCmd = 'npm install && npm run build';
+                        testCmd = 'npm test';
+                    } else if (lowerFiles.includes('pom.xml')) {
+                        buildCmd = 'mvn clean install';
+                        testCmd = 'mvn test';
+                    } else if (lowerFiles.includes('requirements.txt')) {
+                        buildCmd = 'pip install -r requirements.txt';
+                        testCmd = 'pytest';
+                    }
+
+                    const newDescription = `${repoName}\n\n${finding.description}\n\nPayload:\n- Build Command: ${buildCmd}\n- Test Command: ${testCmd}`;
+
                     try {
-                        const ticket = await createIssue(
-                            JIRA_PROJECT_KEY,
-                            finding.summary,
-                            finding.description,
-                            'Task' // Issue Type
-                        );
-                        console.log(`   ✅ Created ${ticket.key}: ${finding.summary}`);
-                        success = true;
+                        // 1. Search for existing ticket
+                        const safeSummary = finding.summary.replace(/"/g, '\\"');
+                        const jql = `project = "${JIRA_PROJECT_KEY}" AND summary ~ "${safeSummary}"`;
+                        const existingIssues = await searchIssues(jql);
+
+                        if (existingIssues.length > 0) {
+                            // 2. Update existing
+                            await updateIssue(existingIssues[0].key, {
+                                summary: finding.summary,
+                                description: newDescription
+                            });
+                            console.log(`   ✅ Updated ${existingIssues[0].key}: ${finding.summary}`);
+                            success = true;
+                        } else {
+                            // 3. Create new
+                            const ticket = await createIssue(
+                                JIRA_PROJECT_KEY,
+                                finding.summary,
+                                newDescription,
+                                'Task' // Issue Type
+                            );
+                            console.log(`   ✅ Created ${ticket.key}: ${finding.summary}`);
+                            success = true;
+                        }
                     } catch (err) {
                         const errMsg = JSON.stringify(err.message || '');
                         // Check for project error (generic 400 or specific message)
@@ -174,14 +208,14 @@ async function inspectRepo() {
                                     JIRA_PROJECT_KEY = choice.toUpperCase();
                                 }
                                 console.log(`\n🔄 Retrying with project: ${JIRA_PROJECT_KEY}...`);
-                                // Loop will continue and retry 'createIssue'
+                                // Loop will continue and retry search/create
 
                             } catch (projErr) {
                                 console.error('Error fetching project list:', projErr.message);
                                 throw err; // Abort this ticket
                             }
                         } else {
-                            console.error(`   ❌ Failed to create ticket for "${finding.summary}": ${err.message}`);
+                            console.error(`   ❌ Failed to process "${finding.summary}": ${err.message}`);
                             break; // Not a project error, skip to next finding
                         }
                     }
